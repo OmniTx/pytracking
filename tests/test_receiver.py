@@ -385,6 +385,65 @@ class RawIpProtectionTests(unittest.TestCase):
         self.assertNotIn(secret_key, stored_payload)
         self.assertNotIn("wk", json.loads(stored_payload))
 
+    # --- the 204 must carry no headers at all (decision D6) -----------------
+
+    def _assert_bare_204(self, resp):
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.data, b"")
+        self.assertEqual(dict(resp.headers), {})
+
+    def test_successful_event_returns_bare_204(self):
+        conn = _Conn()
+        conn.key_row = (1, 1)
+        conn.origins = ["https://shop.example.com"]
+        p = patch.object(passenger_wsgi.pymysql, "connect", return_value=conn)
+        p.start()
+        self.addCleanup(p.stop)
+        payload, hdrs = _valid_body()
+        merged = {**hdrs, "Origin": "https://shop.example.com"}
+        self._assert_bare_204(self.client.post("/api/v2/ev", data=payload, headers=merged))
+
+    def test_duplicate_returns_bare_204(self):
+        db = _UniqueDb(origins=["https://shop.example.com"])
+        p = patch.object(passenger_wsgi.pymysql, "connect", return_value=db)
+        p.start()
+        self.addCleanup(p.stop)
+        payload, hdrs = _valid_body()
+        merged = {**hdrs, "Origin": "https://shop.example.com"}
+        self.client.post("/api/v2/ev", data=payload, headers=merged)
+        self._assert_bare_204(self.client.post("/api/v2/ev", data=payload, headers=merged))
+
+    def test_unknown_key_returns_bare_204(self):
+        conn = _Conn()  # key_row None -> unknown
+        p = patch.object(passenger_wsgi.pymysql, "connect", return_value=conn)
+        p.start()
+        self.addCleanup(p.stop)
+        payload, hdrs = _valid_body()
+        self._assert_bare_204(self.client.post("/api/v2/ev", data=payload, headers=hdrs))
+
+    def test_inactive_key_returns_bare_204(self):
+        conn = _Conn()
+        conn.key_row = (99, False)
+        p = patch.object(passenger_wsgi.pymysql, "connect", return_value=conn)
+        p.start()
+        self.addCleanup(p.stop)
+        payload, hdrs = _valid_body()
+        self._assert_bare_204(self.client.post("/api/v2/ev", data=payload, headers=hdrs))
+
+    def test_bad_origin_returns_bare_204(self):
+        conn = _Conn()
+        conn.key_row = (1, 1)
+        conn.origins = ["https://allowed.example.com"]
+        p = patch.object(passenger_wsgi.pymysql, "connect", return_value=conn)
+        p.start()
+        self.addCleanup(p.stop)
+        payload, hdrs = _valid_body()
+        merged = {**hdrs, "Origin": "https://evil.example.com"}
+        self._assert_bare_204(self.client.post("/api/v2/ev", data=payload, headers=merged))
+
+    def test_missing_key_returns_bare_204(self):
+        self._assert_bare_204(self.client.post("/api/v2/ev", json={}))
+
 
 if __name__ == "__main__":
     unittest.main()

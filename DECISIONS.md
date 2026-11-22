@@ -145,7 +145,32 @@ The host has no Terminal access. The operational path is panel-only:
 
 Consequence: seeding a tenant (`tenants`, `tenant_keys`, `tenant_origins`)
 must be done by hand in phpMyAdmin, because the setup wizard is Phase 4.
+`smoke.py` works around this for acceptance testing by creating and removing
+its own throwaway tenant.
+
+### D18: The 1045 "Access denied" was a truncated cPanel DB user name
+
+The host's MySQL user is cut off mid-word in the panel (`..._du`), which is
+normal for cPanel's 10-character prefix limit but looked like a typo. It was
+the credential itself that had been reset, not the code. Verified by
+`diagnose.py` reporting `connect OK` with all four tables. Lesson: when 1045
+appears, confirm the exact user via `diagnose.py` (which prints `DB_USER`)
+before touching the application.
+
+### D19: Phase 0 acceptance is proven in-process, not over HTTP
+
+`plan.md` line 27 requires the cPanel smoke test against the real host. The
+vhost for `my.herbsworld.net` does not hand requests to Passenger (LiteSpeed
+serves the docroot statically), which is a host configuration issue outside
+this codebase. `smoke.py` therefore runs the same view functions through
+Flask's test client inside the app's own virtualenv, against the real MySQL
+database and the real outbound network. That exercises everything the HTTP
+route would except Passenger's routing layer, so the application is validated
+even while the domain is misrouted.
 
 ## Open questions
 
-None at this time.
+1. **Who enables Passenger on `my.herbsworld.net`?** The app is confirmed
+   healthy and the vhost serves static files only. Either support must enable
+   Passenger/WSGI for that domain, or the app should be recreated on a fresh
+   subdomain whose docroot cPanel provisions itself.

@@ -43,6 +43,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sanitisation, and write-key redaction from the stored payload.
 - `.env.example`: added `PYTRACKING_IP_SALT`.
 
+### Fixed
+
+- `POST /api/v2/ev` 204 responses were again carrying `Content-Type: text/html`
+  after the Phase 1 rewrite, contradicting decision D6 ("no tracking
+  headers"). All 204s now go through a `_no_content()` helper that strips it,
+  and six tests assert the response has no headers at all in every branch
+  (success, duplicate, unknown key, inactive key, bad origin, missing key).
+- `.env.example` entries for the deployed host were the source of a 1045
+  "Access denied": the host's `DB_USER` was a truncated cPanel user name.
+  Recorded in DECISIONS.md as D18.
+
+### Added
+
+- `smoke.py`: runs the Phase 0 acceptance checks on the host itself, via
+  Flask's test client against the real MySQL and network. Works from the
+  panel's script box (path only, no arguments) and needs no HTTP routing,
+  so it validates the deployment even when the vhost is misrouted. Creates
+  and removes a throwaway tenant, and prints PASS/FAIL per check.
+- `diagnose.py`: environment probe reporting interpreters, dependencies, env
+  presence, repository files, DB connectivity and tables, the loaded WSGI
+  module with its routes, and any `Passenger*` directives in nearby
+  `.htaccess` files. Redacts the DB password from error messages.
+
 ### Changed
 
 - `POST /api/v2/ev` replaces the Phase 0 no-op stub; an empty request body now

@@ -32,6 +32,17 @@ MAX_NAME_LEN = 64
 MAX_USER_AGENT_LEN = 255
 
 
+def _no_content():
+    """A 204 with no body and no headers at all.
+
+    Werkzeug would otherwise attach ``Content-Type: text/html``; the receiver
+    must answer with no tracking-specific headers, so strip it.
+    """
+    response = Response(status=204)
+    response.headers.pop("Content-Type", None)
+    return response
+
+
 def _ip_salt():
     """Return the HMAC salt from the ``PYTRACKING_IP_SALT`` environment variable."""
     salt = os.environ.get("PYTRACKING_IP_SALT")
@@ -156,7 +167,7 @@ def receive_event():
     #        silent 204 so clients cannot probe key validity. ---------------
     wk = body.get("wk")
     if not isinstance(wk, str) or not wk:
-        return Response(status=204)
+        return _no_content()
 
     # --- 4. Required event fields (400 on missing/invalid) ------------------
     event_id = body.get("event_id")
@@ -186,7 +197,7 @@ def receive_event():
         tenant_id, active = _find_tenant_by_write_key(connection, wk)
         if not active:
             # Key exists but is inactive → silent reject.
-            return Response(status=204)
+            return _no_content()
 
         # --- 5. Origin check ---------------------------------------------------
         # Fail closed: the request Origin must be in the tenant's allow-list.
@@ -194,7 +205,7 @@ def receive_event():
         allowed = _get_allowed_origins(connection, tenant_id)
         origin_header = request.headers.get("Origin")
         if not allowed or origin_header not in allowed:
-            return Response(status=204)
+            return _no_content()
 
         # --- 6. Build & insert -------------------------------------------------
         client_ip = request.remote_addr or "0.0.0.0"
@@ -237,7 +248,7 @@ def receive_event():
         if connection is not None and connection.open:
             connection.close()
 
-    return Response(status=204)
+    return _no_content()
 
 
 @application.get("/healthz")
