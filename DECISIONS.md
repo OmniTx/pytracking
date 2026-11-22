@@ -190,9 +190,45 @@ Consequence: Phase 0 acceptance and Phase 1 schema/ingestion are proven on the
 host. The only unproven link is Passenger's HTTP routing, which is host
 configuration rather than code.
 
+### D20: The working app on this host keeps its code in the domain directory
+
+A known-good app on the same server (`~/crawler.herbsworld.net/`) has
+`app.py`, `passenger_wsgi.py`, `requirements.txt` and its `.htaccess` **in the
+domain directory**, and that `.htaccess` sets
+`PassengerAppRoot "/home/herbswor/crawler.herbsworld.net"` — the document root
+and the application root are the same directory, and LiteSpeed honours it.
+
+Ours differs: code in `~/repositories/pytracking`, document root
+`~/my.herbsworld.net`. That vhost answers with a LiteSpeed 404 and an empty
+directory listing, so no request reaches Passenger even though `diagnose.py`
+loads all six routes from the code.
+
+The same app's `stderr.log` also reveals cPanel's placeholder
+`passenger_wsgi.py`:
+
+```python
+import imp
+wsgi = imp.load_source('wsgi', 'passenger_wsgi.py')
+```
+
+That re-imports itself until `RecursionError`, so the app can never start, and
+cPanel rewrites the file on every Save. Any deployment step must end by
+restoring the real module and not saving again afterwards.
+
+Options, awaiting the owner's choice (both documented rather than guessed):
+
+- **A. Move the application root to the domain directory** (mirrors the
+  working app): copy the checkout into `~/my.herbsworld.net`, set Application
+  root to `my.herbsworld.net` in the Python panel, then restore the real
+  `passenger_wsgi.py` over cPanel's stub and restart.
+- **B. Keep the checkout in `~/repositories`** and place a small bootstrap
+  `passenger_wsgi.py` in the docroot that loads the repository module by
+  explicit path and re-exports `application`, avoiding a name clash with
+  Passenger's own module name.
+
 ## Open questions
 
-1. **Who enables Passenger on `my.herbsworld.net`?** The app is confirmed
-   healthy and the vhost serves static files only. Either support must enable
-   Passenger/WSGI for that domain, or the app should be recreated on a fresh
-   subdomain whose docroot cPanel provisions itself.
+1. **How should `my.herbsworld.net` be wired to the app?** See D20. Either
+   move the application root to the domain directory (mirrors the working app
+   on this host) or keep the checkout in `~/repositories` and add a bootstrap
+   entry point in the docroot.
