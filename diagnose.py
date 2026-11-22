@@ -119,6 +119,8 @@ def main():
         _field("connect", "SKIPPED: {0} not set".format(exc))
     except Exception as exc:
         _field("connect", "FAILED: {0}".format(_redact(exc, password)))
+        for hint in _mysql_hint(exc):
+            print("    -> {0}".format(hint))
 
     print("\n--- wsgi module ---")
     try:
@@ -139,11 +141,94 @@ def main():
     except Exception as exc:
         _field("import", "FAILED: {0}".format(_redact(exc, password)))
 
+    _report_htaccess(HERE)
+
     print("\n" + "=" * 70)
     print("If this prints and the dependencies import, the Python side is fine")
     print("and the 404s are HTTP routing (vhost not handing requests to")
     print("Passenger), not application code.")
     print("=" * 70)
+
+
+def _mysql_hint(exc):
+    """Turn a common PyMySQL failure into a concrete next step."""
+    code = None
+    if exc.args and isinstance(exc.args[0], int):
+        code = exc.args[0]
+    user = os.environ.get("DB_USER", "(DB_USER unset)")
+    if code == 1045:
+        return [
+            "Access denied: the username or password does not match.",
+            "Check DB_USER is exactly {0!r} (no truncated prefix).".format(user),
+            "Reset it in cPanel > MySQL Databases, then update DB_PASSWORD.",
+            "The user also needs privileges on DB_NAME.",
+        ]
+    if code == 1049:
+        return [
+            "Unknown database: DB_NAME does not exist.",
+            "Create it in cPanel > MySQL Databases, or fix DB_NAME.",
+        ]
+    if code in (2002, 2003):
+        return [
+            "Cannot reach the server: check DB_HOST.",
+            "On cPanel this is normally 'localhost'.",
+        ]
+    return []
+
+
+def _find_htaccess_files(root, limit=6):
+    """Return .htaccess paths near *root* that mention Passenger."""
+    candidates = []
+    home = os.path.expanduser("~")
+    search_dirs = [
+        root,
+        os.path.join(home, "public_html"),
+        home,
+    ]
+    for directory in search_dirs:
+        try:
+            entries = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry == ".htaccess":
+                path = os.path.join(directory, entry)
+            else:
+                nested = os.path.join(directory, entry, ".htaccess")
+                if not os.path.isfile(nested):
+                    continue
+                path = nested
+            if path not in candidates:
+                candidates.append(path)
+        if len(candidates) >= limit:
+            break
+    return candidates[:limit]
+
+
+def _report_htaccess(root):
+    """Show Passenger directives found in nearby .htaccess files."""
+    print("\n--- passenger wiring ---")
+    found_any = False
+    for path in _find_htaccess_files(root):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                lines = [
+                    line.strip()
+                    for line in handle
+                    if line.strip().lower().startswith("passenger")
+                ]
+        except OSError as exc:
+            _field(path, "unreadable ({0})".format(exc.strerror or exc))
+            continue
+        if lines:
+            found_any = True
+            _field("File", path)
+            for line in lines:
+                print("    {0}".format(line))
+    if not found_any:
+        print("No Passenger directives found in any .htaccess near this app.")
+        print("The vhost is probably not configured to hand requests to")
+        print("Passenger at all - that is a host-side setting, not app code.")
 
 
 if __name__ == "__main__":

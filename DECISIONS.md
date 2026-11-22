@@ -112,13 +112,24 @@ write key is a long-lived secret; persisting it in every event row would leak
 it into backups, logs, and the admin UI. `event_id` and `name` are also
 promoted to their own columns for indexing.
 
-### D16: Deployed on Python 3.9, not the 3.12/3.13 in the plan
+### D16: Runs on Python 3.13.5, matching the plan
 
-`plan.md` line 1 specifies Python 3.12 or 3.13, but the cPanel host offers
-only 3.9.23. The app runs correctly on 3.9: Flask 3.1.3 requires >= 3.9 and
-the code avoids 3.10+ syntax (no `match`, no `X | Y` unions, no
-`removeprefix`/`removesuffix`). Recorded as a deliberate deviation; upgrade
-the host's Python when cPanel offers 3.12+.
+`plan.md` line 1 asks for 3.12 or 3.13. The host's Python panel first showed
+3.9.23 and creating the app appeared to use it, but the app's actual
+virtualenv (`virtualenv/repositories/pytracking/3.13`) runs **3.13.5** -
+confirmed by `diagnose.py` reporting `sys.executable` and `VIRTUAL_ENV`. No
+version deviation; the panel label was stale. The code stays 3.9-compatible
+anyway, since that costs nothing.
+
+### D16a: Confirmed the Python side is healthy; 404s are vhost routing
+
+`diagnose.py` run in the app's venv prints `flask 3.1.3`, `pymysql 1.2.4`,
+our real `passenger_wsgi.py` (12,599 bytes, not cPanel's 488-byte stub),
+`marker pytracking-phase1-landing`, and all six routes. Therefore the
+LiteSpeed 404s on `my.herbsworld.net` are not application faults: that vhost
+never hands the request to Passenger. Diagnosing this took one panel script
+run, where HTTP probing could not distinguish "broken app" from "unrouted
+vhost" - the reason `diagnose.py` exists.
 
 ### D17: No cPanel Terminal - everything runs from the panel UI
 
