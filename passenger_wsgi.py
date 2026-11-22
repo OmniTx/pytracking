@@ -15,7 +15,6 @@ import time
 import urllib.error
 import urllib.request
 
-import flask
 import pymysql
 from flask import Flask, Response, jsonify, request
 
@@ -246,6 +245,16 @@ def healthz():
     return jsonify({"ok": True})
 
 
+def _flask_version():
+    """Return the installed Flask version without the deprecated attribute."""
+    try:
+        from importlib.metadata import version
+
+        return version("flask")
+    except Exception:
+        return "unknown"
+
+
 @application.get("/")
 def landing():
     """Human-readable landing page that proves Flask served the request.
@@ -321,7 +330,7 @@ def landing():
 </html>""".format(
         marker=BUILD_MARKER,
         py=platform.python_version(),
-        flask_version=flask.__version__,
+        flask_version=_flask_version(),
         file_info=file_info,
         env_rows=env_rows,
     )
