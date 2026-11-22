@@ -9,14 +9,19 @@ import hashlib
 import hmac
 import json
 import os
+import platform
+import sys
 import time
 import urllib.error
 import urllib.request
 
+import flask
 import pymysql
 from flask import Flask, Response, jsonify, request
 
 application = Flask(__name__)
+
+BUILD_MARKER = "pytracking-phase1-landing"
 
 OUTBOUND_TARGET = "https://graph.facebook.com/"
 OUTBOUND_TIMEOUT_SECONDS = 5
@@ -239,6 +244,88 @@ def receive_event():
 @application.get("/healthz")
 def healthz():
     return jsonify({"ok": True})
+
+
+@application.get("/")
+def landing():
+    """Human-readable landing page that proves Flask served the request.
+
+    Deliberately reports only *whether* each secret is set, never its value.
+    """
+    env_names = [
+        "DB_HOST",
+        "DB_NAME",
+        "DB_USER",
+        "DB_PASSWORD",
+        "PYTRACKING_IP_SALT",
+    ]
+    env_rows = "".join(
+        '<tr><td>{0}</td><td class="{1}">{2}</td></tr>'.format(
+            name,
+            "ok" if os.environ.get(name) else "missing",
+            "set" if os.environ.get(name) else "MISSING",
+        )
+        for name in env_names
+    )
+
+    module_file = getattr(sys.modules.get(__name__), "__file__", "unknown")
+    try:
+        stat = os.stat(module_file)
+        file_info = "{0} ({1} bytes, mtime {2})".format(
+            module_file,
+            stat.st_size,
+            time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(stat.st_mtime)),
+        )
+    except OSError:
+        file_info = "{0} (stat failed)".format(module_file)
+
+    html = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pytracking is running</title>
+<style>
+  body {{ font: 15px/1.6 -apple-system, Segoe UI, Roboto, sans-serif;
+         margin: 0; padding: 2.5rem; color: #161616; background: #f4f4f4; }}
+  h1 {{ margin: 0 0 .25rem; font-size: 1.5rem; }}
+  .ok {{ color: #0f6b3f; font-weight: 600; }}
+  .missing {{ color: #b32d0f; font-weight: 600; }}
+  table {{ border-collapse: collapse; margin: .75rem 0 1.5rem; }}
+  td {{ padding: .3rem 1.25rem .3rem 0; }}
+  code {{ background: #e8e8e8; padding: .1rem .35rem; }}
+  dt {{ font-weight: 600; margin-top: .6rem; }}
+  dd {{ margin: 0 0 .2rem 0; }}
+</style>
+</head>
+<body>
+<h1>pytracking receiver is running</h1>
+<p>Flask served this page, so Passenger is routing requests to Python.</p>
+<table>
+  <tr><td>Build marker</td><td><code>{marker}</code></td></tr>
+  <tr><td>Python</td><td>{py}</td></tr>
+  <tr><td>Flask</td><td>{flask_version}</td></tr>
+  <tr><td>Executing file</td><td><code>{file_info}</code></td></tr>
+</table>
+<h2>Environment variables</h2>
+<p>Values are never shown here &mdash; only whether each one is set.</p>
+<table>{env_rows}</table>
+<h2>Routes</h2>
+<dl>
+  <dt>GET /</dt><dd>this page</dd>
+  <dt>GET /healthz</dt><dd><code>{{"ok": true}}</code></dd>
+  <dt>POST /api/v2/ev</dt><dd>event receiver (204)</dd>
+  <dt>GET /diag/db</dt><dd>MySQL connectivity</dd>
+  <dt>GET /diag/outbound</dt><dd>HTTPS connectivity</dd>
+</dl>
+</body>
+</html>""".format(
+        marker=BUILD_MARKER,
+        py=platform.python_version(),
+        flask_version=flask.__version__,
+        file_info=file_info,
+        env_rows=env_rows,
+    )
+    return Response(html, mimetype="text/html")
 
 
 @application.get("/diag/db")
