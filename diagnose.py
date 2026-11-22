@@ -152,31 +152,66 @@ def main():
 
 
 def _report_http_probe():
-    """Loop back to the live domain from the server itself.
+    """Probe the site through the public URL and directly on the loopback.
 
-    Done here rather than from a workstation because this output is what the
-    host operator will act on, and it distinguishes "the network cannot reach
-    us" from "the vhost is not routing to Passenger" in one shot.
+    The public probe goes out through Cloudflare, which is a separate hop that
+    can answer 404/200 on its own. Hitting 127.0.0.1 with the Host header set
+    asks the origin web server directly: if Flask answers there but not in
+    public, the problem is in front of the origin, not in Passenger.
     """
     print("\n--- live http probe (from this server) ---")
+    import ssl
     import urllib.error
     import urllib.request
 
     domain = os.environ.get("SMOKE_DOMAIN", "https://my.herbsworld.net")
-    for path in ("/healthz", "/"):
-        url = domain.rstrip("/") + path
+    host = domain.split("://", 1)[-1].split("/")[0]
+
+    def show(label, url, headers=None, context=None):
+        request = urllib.request.Request(url, headers=headers or {})
         try:
-            with urllib.request.urlopen(url, timeout=10) as response:
-                body = response.read(400).decode("utf-8", "replace")
-                _field(url, "HTTP {0}".format(response.status))
-                print("    {0}".format(body.replace("\n", " ")[:200]))
+            with urllib.request.urlopen(
+                request, timeout=10, context=context
+            ) as response:
+                body = response.read(300).decode("utf-8", "replace")
+                server = response.headers.get("Server", "?")
+                powered = response.headers.get("X-Powered-By", "")
+                _field(label, "HTTP {0}".format(response.status))
+                print("    server={0} powered-by={1}".format(server, powered))
+                print("    {0}".format(body.replace("\n", " ")[:160]))
+                return response.status, body
         except urllib.error.HTTPError as exc:
-            body = exc.read(200).decode("utf-8", "replace")
-            _field(url, "HTTP {0}".format(exc.code))
+            body = exc.read(300).decode("utf-8", "replace")
+            _field(label, "HTTP {0}".format(exc.code))
+            print("    {0}".format(body.replace("\n", " ")[:160]))
             if "litespeed" in body.lower() or "powered by" in body.lower():
-                print("    served by the LiteSpeed error page, not Flask")
+                print("    answered by the LiteSpeed error page, not Flask")
+            return exc.code, body
         except Exception as exc:
-            _field(url, "FAILED: {0}".format(type(exc).__name__))
+            _field(label, "FAILED: {0}".format(type(exc).__name__))
+            return None, ""
+
+    show("public /healthz", domain.rstrip("/") + "/healthz")
+
+    # Direct to the origin, bypassing Cloudflare. Host header selects the vhost.
+    show(
+        "loopback http://127.0.0.1/healthz",
+        "http://127.0.0.1/healthz",
+        headers={"Host": host},
+    )
+    insecure = ssl.create_default_context()
+    insecure.check_hostname = False
+    insecure.verify_mode = ssl.CERT_NONE
+    show(
+        "loopback https://127.0.0.1/healthz",
+        "https://127.0.0.1/healthz",
+        headers={"Host": host},
+        context=insecure,
+    )
+
+    # Control: a vhost known to run a Python app on this host.
+    show("control crawler.herbsworld.net/healthz",
+         "https://crawler.herbsworld.net/healthz")
 
 
 def _mysql_hint(exc):
