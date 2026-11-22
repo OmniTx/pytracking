@@ -66,6 +66,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module with its routes, and any `Passenger*` directives in nearby
   `.htaccess` files. Redacts the DB password from error messages.
 
+### Verified
+
+- **Phase 0 acceptance cleared on the real host (2026-11-23), 8/8 checks.**
+  `smoke.py` against the deployed app, real MySQL, and real outbound network:
+  health returns `{"ok": true}`, `/diag/db` returns `{"db": "ok"}`, and
+  `/diag/outbound` reports `status=400` in 268.7 ms (the expected success
+  signal - any HTTP response proves egress). `POST /api/v2/ev` returns a bare
+  204, one row is written, a duplicate `event_id` adds nothing, the stored
+  client IP is a 64-character HMAC, and `user_agent`/`source_origin` are
+  stored. Phase 1 schema and ingestion are therefore verified end-to-end.
+
 ### Changed
 
 - `POST /api/v2/ev` replaces the Phase 0 no-op stub; an empty request body now

@@ -168,6 +168,28 @@ database and the real outbound network. That exercises everything the HTTP
 route would except Passenger's routing layer, so the application is validated
 even while the domain is misrouted.
 
+**Accepted on the real host, 2026-11-23: 8/8 checks passed.**
+
+```
+[PASS] GET /healthz returns {"ok": true}
+[PASS] GET /diag/db returns {"db": "ok"}
+[PASS] GET /diag/outbound reports a status   (status=400, 268.7ms)
+[PASS] POST /api/v2/ev returns 204 with no body   (headers=none)
+[PASS] the event was written to the database      (1 row)
+[PASS] a duplicate event_id stores nothing extra  (still 1 row)
+[PASS] the raw client IP is not stored            (64-char HMAC)
+[PASS] user_agent and source_origin are stored
+```
+
+`/diag/outbound` returning 400 is the expected outcome (see D3): the root of
+graph.facebook.com is not a valid API call, but receiving any HTTP response
+proves TLS, DNS, and egress all work from the host. The throwaway tenant was
+created and removed, so the database was left as found.
+
+Consequence: Phase 0 acceptance and Phase 1 schema/ingestion are proven on the
+host. The only unproven link is Passenger's HTTP routing, which is host
+configuration rather than code.
+
 ## Open questions
 
 1. **Who enables Passenger on `my.herbsworld.net`?** The app is confirmed
