@@ -1,0 +1,50 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- Phase 0 host-validation receiver in `passenger_wsgi.py`:
+  - `POST /api/v2/ev` returns `204 No Content` with an empty body and no
+    response headers.
+  - `GET /healthz` returns `{"ok": true}`.
+  - `GET /diag/db` opens a PyMySQL connection using `DB_*` environment
+    variables and returns `{"db": "ok"}` or
+    `{"db": "error", "message": ...}`; the password is never echoed.
+  - `GET /diag/outbound` performs one HTTPS GET to
+    `https://graph.facebook.com/` with a 5-second timeout and returns the
+    HTTP status code and elapsed milliseconds, or the exception class and
+    message on transport failure.
+- `tests/test_phase0.py`: offline tests for all Phase 0 routes using the
+  Flask test client, with the database and outbound calls mocked.
+- Project scaffolding: pinned `requirements.txt`, `.env.example`,
+  `.gitignore`, Apache 2.0 `LICENSE`, `NOTICE`, `README.md`,
+  `DECISIONS.md`, and SPDX headers on all source files.
+
+- **Phase 1 receiver** in `passenger_wsgi.py`: `POST /api/v2/ev` now resolves
+  write keys to tenants, enforces a fail-closed Origin allowlist, validates
+  `event_id`/`name` (each string, max 64), deduplicates on
+  `(tenant_id, event_id)`, and stores events via PyMySQL with HMAC-SHA256
+  client-IP hashing (raw IP never stored). Bodies over 16 KB return 413;
+  invalid event fields return 400; every write-key problem (missing, unknown,
+  inactive) returns a silent 204. Responses remain 204 with no body and no
+  tracking headers. The stored payload omits the `wk` write key.
+- `db/migrations/001_init.sql`: idempotent schema for `tenants`,
+  `tenant_keys`, `tenant_origins`, and `events` (utf8mb4/InnoDB, with the
+  `(tenant_id, event_id)` unique key and `(tenant_id, received_at)` index).
+- `db/run_migration.py`: runs a migration SQL file using `DB_*` env vars.
+- `tests/test_receiver.py`: offline data-protection tests covering unknown-key
+  writes, bad-origin writes, oversize-body 413, duplicate-event dedupe, raw-IP
+  sanitisation, and write-key redaction from the stored payload.
+- `.env.example`: added `PYTRACKING_IP_SALT`.
+
+### Changed
+
+- `POST /api/v2/ev` replaces the Phase 0 no-op stub; an empty request body now
+  returns a silent 204 rather than unconditionally 204 (same status, now with
+  validation behind it).
