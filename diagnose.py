@@ -92,6 +92,9 @@ def main():
         except OSError as exc:
             _field(filename, "MISSING ({0})".format(exc.strerror or exc))
 
+    _check_startup_file()
+    _report_layout()
+
     print("\n--- database ---")
     try:
         import pymysql
@@ -149,6 +152,67 @@ def main():
     print("and the 404s are HTTP routing (vhost not handing requests to")
     print("Passenger), not application code.")
     print("=" * 70)
+
+
+def _check_startup_file():
+    """Detect cPanel's placeholder stub, which is self-recursive.
+
+    cPanel rewrites passenger_wsgi.py to::
+
+        import imp
+        wsgi = imp.load_source('wsgi', 'passenger_wsgi.py')
+
+    Importing that re-imports itself until RecursionError, so the app can
+    never start. It reappears whenever the app is saved or recreated.
+    """
+    print("\n--- startup file ---")
+    path = os.path.join(HERE, "passenger_wsgi.py")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            content = handle.read()
+    except OSError as exc:
+        _field("passenger_wsgi.py", "MISSING ({0})".format(exc.strerror or exc))
+        return
+
+    if "imp.load_source" in content and "passenger_wsgi.py" in content:
+        _field("passenger_wsgi.py", "CPANEL STUB - app cannot start")
+        print("    It re-imports itself until RecursionError. Replace it with")
+        print("    the repository version (git checkout passenger_wsgi.py).")
+        return
+    if 'application = Flask' in content or "application = create_app()" in content:
+        _field("passenger_wsgi.py", "real WSGI module")
+        return
+    _field("passenger_wsgi.py", "unrecognised contents")
+
+
+def _report_layout():
+    """Warn when the app root differs from the domain document root.
+
+    On this host the working app keeps everything in ~/<domain>/, and the
+    .htaccess PassengerAppRoot points there. A checkout in ~/repositories/
+    means the docroot and the app are different trees, which is exactly the
+    shape that can leave the vhost serving static files.
+    """
+    print("\n--- layout ---")
+    home = os.path.expanduser("~")
+    _field("app root", HERE)
+    _field("home", home)
+    try:
+        domain_dirs = [
+            entry
+            for entry in sorted(os.listdir(home))
+            if os.path.isfile(os.path.join(home, entry, ".htaccess"))
+        ]
+    except OSError:
+        domain_dirs = []
+    _field("dirs with .htaccess", ", ".join(domain_dirs) or "none")
+
+    if not HERE.startswith(os.path.join(home, "repositories")):
+        return
+    print("\n    NOTE: this app lives under ~/repositories, not in a domain")
+    print("    directory. Compare against a working app on this host, whose")
+    print("    files sit directly in ~/<domain>/ with PassengerAppRoot set")
+    print("    to that directory.")
 
 
 def _report_http_probe():
