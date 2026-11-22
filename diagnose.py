@@ -142,12 +142,41 @@ def main():
         _field("import", "FAILED: {0}".format(_redact(exc, password)))
 
     _report_htaccess(HERE)
+    _report_http_probe()
 
     print("\n" + "=" * 70)
     print("If this prints and the dependencies import, the Python side is fine")
     print("and the 404s are HTTP routing (vhost not handing requests to")
     print("Passenger), not application code.")
     print("=" * 70)
+
+
+def _report_http_probe():
+    """Loop back to the live domain from the server itself.
+
+    Done here rather than from a workstation because this output is what the
+    host operator will act on, and it distinguishes "the network cannot reach
+    us" from "the vhost is not routing to Passenger" in one shot.
+    """
+    print("\n--- live http probe (from this server) ---")
+    import urllib.error
+    import urllib.request
+
+    domain = os.environ.get("SMOKE_DOMAIN", "https://my.herbsworld.net")
+    for path in ("/healthz", "/"):
+        url = domain.rstrip("/") + path
+        try:
+            with urllib.request.urlopen(url, timeout=10) as response:
+                body = response.read(400).decode("utf-8", "replace")
+                _field(url, "HTTP {0}".format(response.status))
+                print("    {0}".format(body.replace("\n", " ")[:200]))
+        except urllib.error.HTTPError as exc:
+            body = exc.read(200).decode("utf-8", "replace")
+            _field(url, "HTTP {0}".format(exc.code))
+            if "litespeed" in body.lower() or "powered by" in body.lower():
+                print("    served by the LiteSpeed error page, not Flask")
+        except Exception as exc:
+            _field(url, "FAILED: {0}".format(type(exc).__name__))
 
 
 def _mysql_hint(exc):
@@ -176,59 +205,81 @@ def _mysql_hint(exc):
     return []
 
 
-def _find_htaccess_files(root, limit=6):
-    """Return .htaccess paths near *root* that mention Passenger."""
+def _find_htaccess_files(root, limit=12):
+    """Return .htaccess paths under the home directory, app root first.
+
+    cPanel writes the Passenger directives into the *domain's document root*,
+    which is usually ``~/<domain>/`` -- not the application root -- so scan
+    every directory in the home folder one level deep.
+    """
     candidates = []
     home = os.path.expanduser("~")
-    search_dirs = [
-        root,
-        os.path.join(home, "public_html"),
-        home,
-    ]
+
+    direct = os.path.join(root, ".htaccess")
+    if os.path.isfile(direct):
+        candidates.append(direct)
+
+    search_dirs = [os.path.join(home, "public_html"), home]
     for directory in search_dirs:
         try:
             entries = sorted(os.listdir(directory))
         except OSError:
             continue
         for entry in entries:
+            nested = os.path.join(directory, entry, ".htaccess")
             if entry == ".htaccess":
-                path = os.path.join(directory, entry)
-            else:
-                nested = os.path.join(directory, entry, ".htaccess")
-                if not os.path.isfile(nested):
-                    continue
-                path = nested
-            if path not in candidates:
-                candidates.append(path)
+                nested = os.path.join(directory, entry)
+            if os.path.isfile(nested) and nested not in candidates:
+                candidates.append(nested)
         if len(candidates) >= limit:
             break
     return candidates[:limit]
 
 
 def _report_htaccess(root):
-    """Show Passenger directives found in nearby .htaccess files."""
+    """Show every .htaccess found, with its Passenger directives."""
     print("\n--- passenger wiring ---")
-    found_any = False
-    for path in _find_htaccess_files(root):
+    files = _find_htaccess_files(root)
+    if not files:
+        print("No .htaccess file found in the app root or under the home")
+        print("directory. If the app was created in cPanel, one should exist")
+        print("in the domain's document root (e.g. ~/<domain>/.htaccess).")
+        return
+
+    for path in files:
         try:
             with open(path, encoding="utf-8", errors="replace") as handle:
-                lines = [
-                    line.strip()
-                    for line in handle
-                    if line.strip().lower().startswith("passenger")
-                ]
+                content = handle.read()
         except OSError as exc:
-            _field(path, "unreadable ({0})".format(exc.strerror or exc))
+            _field("unreadable", "{0} ({1})".format(path, exc.strerror or exc))
             continue
+
+        lines = [
+            line.strip()
+            for line in content.splitlines()
+            if line.strip().lower().startswith(("passenger", "requestredirect"))
+        ]
+        _field("File", path)
         if lines:
-            found_any = True
-            _field("File", path)
             for line in lines:
                 print("    {0}".format(line))
-    if not found_any:
-        print("No Passenger directives found in any .htaccess near this app.")
-        print("The vhost is probably not configured to hand requests to")
-        print("Passenger at all - that is a host-side setting, not app code.")
+        elif content.strip():
+            print("    (exists, {0} lines, but no Passenger directives)".format(
+                len(content.splitlines())
+            ))
+        else:
+            print("    (exists but is empty)")
+
+    with_passenger = [
+        path
+        for path in files
+        if "passenger" in open(path, encoding="utf-8", errors="replace").read().lower()
+    ]
+    if not with_passenger:
+        print("\nNo Passenger directives in any .htaccess found.")
+        print("cPanel's Setup Python App writes them to the domain document")
+        print("root. If that is not under the home directory (or the app was")
+        print("created without them), the vhost will never reach Passenger.")
 
 
 if __name__ == "__main__":
