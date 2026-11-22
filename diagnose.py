@@ -145,6 +145,7 @@ def main():
         _field("import", "FAILED: {0}".format(_redact(exc, password)))
 
     _report_htaccess(HERE)
+    _exercise_receiver(password)
     _report_http_probe()
 
     print("\n" + "=" * 70)
@@ -213,6 +214,67 @@ def _report_layout():
     print("    directory. Compare against a working app on this host, whose")
     print("    files sit directly in ~/<domain>/ with PassengerAppRoot set")
     print("    to that directory.")
+
+
+def _exercise_receiver(password):
+    """Call the receiver in-process so a failing request yields a traceback.
+
+    Over HTTP a broken view is an opaque 500. Here the exception surfaces with
+    its real type and stack, which is the only way to diagnose it without
+    shell access or Passenger error pages.
+    """
+    print("\n--- receiver in-process ---")
+    import hashlib
+    import traceback
+
+    try:
+        import passenger_wsgi as app_module
+    except Exception:
+        _field("import", "FAILED")
+        traceback.print_exc()
+        return
+
+    source = os.path.join(HERE, "passenger_wsgi.py")
+    try:
+        with open(source, "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
+        _field("passenger_wsgi.py sha256", digest[:32] + "...")
+    except OSError:
+        pass
+
+    # Show the deployed view itself: a stale or hand-edited file is otherwise
+    # indistinguishable from a correct one at the same path.
+    try:
+        import inspect
+
+        view_source = inspect.getsource(app_module.receive_event)
+        lines = view_source.splitlines()
+        print("receive_event source ({0} lines, first 12):".format(len(lines)))
+        for line in lines[:12]:
+            print("    {0}".format(line))
+    except Exception as exc:
+        print("could not read view source: {0}".format(exc))
+
+    client = app_module.application.test_client()
+    # Without this, Flask converts an exception into an opaque 500 response and
+    # the traceback is lost - exactly what happens over HTTP.
+    app_module.application.config["PROPAGATE_EXCEPTIONS"] = True
+    cases = [
+        ("unknown key", {"wk": "dx-unknown", "event_id": "dx-1", "name": "page_view"}),
+        ("missing wk", {"event_id": "dx-2", "name": "page_view"}),
+        ("missing event_id", {"wk": "x"}),
+    ]
+    for label, payload in cases:
+        try:
+            response = client.post(
+                "/api/v2/ev",
+                json=payload,
+                headers={"Origin": "https://my.herbsworld.net"},
+            )
+            _field(label, "HTTP {0}".format(response.status_code))
+        except Exception as exc:
+            _field(label, "RAISED {0}".format(type(exc).__name__))
+            traceback.print_exc()
 
 
 def _report_http_probe():
