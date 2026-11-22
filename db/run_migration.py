@@ -3,16 +3,21 @@
 
 Usage::
 
+    python db/run_migration.py
     python db/run_migration.py --file db/migrations/001_init.sql
 
-Environment variables (from .env)::
+With no arguments the file defaults to ``001_init.sql`` next to this script,
+so it can be run from a hosting panel that only accepts a script path.
+
+Environment variables::
 
     DB_HOST=localhost
     DB_NAME=pytracking
     DB_USER=pytracking_user
     DB_PASSWORD=replace-me
 
-No extra dependencies beyond flask and PyMySQL.
+Results are printed to stdout because hosting panels commonly surface only
+stdout. No dependencies beyond PyMySQL.
 """
 
 import argparse
@@ -20,6 +25,10 @@ import os
 import sys
 
 import pymysql
+
+DEFAULT_SQL_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "migrations", "001_init.sql"
+)
 
 
 def parse_args(argv=None):
@@ -29,8 +38,8 @@ def parse_args(argv=None):
     parser.add_argument(
         "--file",
         dest="sql_file",
-        required=True,
-        help="Path to the SQL migration file.",
+        default=DEFAULT_SQL_FILE,
+        help="Path to the SQL migration file (default: 001_init.sql).",
     )
     return parser.parse_args(argv)
 
@@ -48,7 +57,7 @@ def run_migration(sql_file):
             autocommit=False,
         )
     except Exception as exc:
-        print(f"FATAL: unable to connect to MySQL: {exc}", file=sys.stderr)
+        print(f"FATAL: unable to connect to MySQL: {exc}")
         sys.exit(1)
 
     with open(sql_file, encoding="utf-8") as fh:
@@ -57,17 +66,16 @@ def run_migration(sql_file):
     statements = _split_statements(sql)
 
     try:
+        applied = 0
         with connection.cursor() as cursor:
-            for i, statement in enumerate(statements, start=1):
+            for statement in statements:
                 cursor.execute(statement)
+                applied += 1
         connection.commit()
-        print(f"MIGRATION OK: applied {i} statement(s) from {sql_file}")
+        print(f"MIGRATION OK: applied {applied} statement(s) from {sql_file}")
     except Exception as exc:
         connection.rollback()
-        print(
-            f"MIGRATION FAILED ({type(exc).__name__}): {exc}",
-            file=sys.stderr,
-        )
+        print(f"MIGRATION FAILED ({type(exc).__name__}): {exc}")
         raise
     finally:
         if connection.open:

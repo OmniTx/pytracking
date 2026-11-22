@@ -112,6 +112,29 @@ write key is a long-lived secret; persisting it in every event row would leak
 it into backups, logs, and the admin UI. `event_id` and `name` are also
 promoted to their own columns for indexing.
 
+### D16: Deployed on Python 3.9, not the 3.12/3.13 in the plan
+
+`plan.md` line 1 specifies Python 3.12 or 3.13, but the cPanel host offers
+only 3.9.23. The app runs correctly on 3.9: Flask 3.1.3 requires >= 3.9 and
+the code avoids 3.10+ syntax (no `match`, no `X | Y` unions, no
+`removeprefix`/`removesuffix`). Recorded as a deliberate deviation; upgrade
+the host's Python when cPanel offers 3.12+.
+
+### D17: No cPanel Terminal - everything runs from the panel UI
+
+The host has no Terminal access. The operational path is panel-only:
+
+- **Pip install**: the "Run Pip Install" button (reads `requirements.txt`).
+- **Migration**: `db/run_migration.py` takes the SQL file as an optional
+  argument and defaults to `migrations/001_init.sql` resolved from its own
+  location, so cPanel's "Execute python script" box works with just the
+  script path. Results print to stdout, since the panel may not surface
+  stderr.
+- **Schema inspection / seeding**: phpMyAdmin.
+
+Consequence: seeding a tenant (`tenants`, `tenant_keys`, `tenant_origins`)
+must be done by hand in phpMyAdmin, because the setup wizard is Phase 4.
+
 ## Open questions
 
 None at this time.

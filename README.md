@@ -48,11 +48,14 @@ python -c "import secrets; print(secrets.token_hex(32))"
 ## Database setup
 
 ```sh
-python db/run_migration.py --file db/migrations/001_init.sql
+python db/run_migration.py
 ```
 
-The migration is idempotent (`CREATE TABLE IF NOT EXISTS`) and never drops
-data. Then insert a tenant, a write key, and at least one allowed origin:
+The SQL file defaults to `db/migrations/001_init.sql` (resolved relative to
+the script), so this also works from a hosting panel that accepts only a
+script path. The migration is idempotent (`CREATE TABLE IF NOT EXISTS`) and
+never drops data. Then insert a tenant, a write key, and at least one allowed
+origin:
 
 ```sql
 INSERT INTO tenants (name, slug, status) VALUES ('Demo', 'demo', 'active');

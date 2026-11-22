@@ -48,3 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `POST /api/v2/ev` replaces the Phase 0 no-op stub; an empty request body now
   returns a silent 204 rather than unconditionally 204 (same status, now with
   validation behind it).
+- `db/run_migration.py`: `--file` is now optional and defaults to
+  `migrations/001_init.sql` resolved relative to the script, so the migration
+  can be run from a hosting panel that accepts only a script path. Progress
+  and failure messages go to stdout.
