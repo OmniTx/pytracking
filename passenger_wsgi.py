@@ -32,11 +32,26 @@ MAX_NAME_LEN = 64
 MAX_USER_AGENT_LEN = 255
 
 
+def _log_traceback():
+    """Append the current traceback to pytracking-debug.log beside this file."""
+    import traceback
+
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "pytracking-debug.log")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("--- {0} ---\n".format(
+                time.strftime("%Y-%m-%d %H:%M:%S")))
+            traceback.print_exc(file=handle)
+    except Exception:
+        pass
+
+
 def _no_content():
-    """A 204 with no body and no headers at all.
+    """A 204 with no body and no tracking headers.
 
     Werkzeug would otherwise attach ``Content-Type: text/html``; the receiver
-    must answer with no tracking-specific headers, so strip it.
+    must answer with none, so strip it.
     """
     response = Response(status=204)
     response.headers.pop("Content-Type", None)
@@ -244,6 +259,14 @@ def receive_event():
     except UnknownWriteKey:
         # Unknown write key → silent reject, do not reveal key validity.
         pass
+    except Exception:
+        # Unexpected failure. With PYTRACKING_DEBUG=1 the traceback is written
+        # next to the app, because Passenger may not capture stderr here and
+        # an HTTP 500 alone gives no way to tell what happened.
+        if os.environ.get("PYTRACKING_DEBUG") == "1":
+            _log_traceback()
+            return _no_content()
+        raise
     finally:
         if connection is not None and connection.open:
             connection.close()
@@ -346,6 +369,17 @@ def landing():
         env_rows=env_rows,
     )
     return Response(html, mimetype="text/html")
+
+
+@application.get("/diag/no-content")
+def diag_no_content():
+    """Return a bare 204, to test how the server handles a bodyless response.
+
+    /healthz (200 + JSON) works through Passenger on this host, but every 204
+    from the receiver arrives as a 500. This isolates whether the status code
+    itself is the problem rather than the view logic.
+    """
+    return _no_content()
 
 
 @application.get("/diag/db")

@@ -146,6 +146,7 @@ def main():
 
     _report_htaccess(HERE)
     _exercise_receiver(password)
+    _report_passenger_logs()
     _report_http_probe()
 
     print("\n" + "=" * 70)
@@ -275,6 +276,43 @@ def _exercise_receiver(password):
         except Exception as exc:
             _field(label, "RAISED {0}".format(type(exc).__name__))
             traceback.print_exc()
+
+
+def _report_passenger_logs():
+    """Print the tail of Passenger's stderr log for this app.
+
+    A view that raises becomes an opaque 500 over HTTP, and the traceback goes
+    to stderr.log in the application root - the same file a working app on
+    this host keeps there. The password is redacted before printing.
+    """
+    print("\n--- passenger logs ---")
+    password = os.environ.get("DB_PASSWORD", "")
+    candidates = [
+        os.path.join(HERE, "stderr.log"),
+        os.path.join(HERE, "passenger.log"),
+        os.path.join(HERE, "error.log"),
+    ]
+    found = False
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        found = True
+        try:
+            size = os.path.getsize(path)
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                handle.seek(max(0, size - 6000))
+                tail = handle.read()
+        except OSError as exc:
+            _field(path, "unreadable ({0})".format(exc.strerror or exc))
+            continue
+        _field("file", "{0} ({1} bytes)".format(path, size))
+        lines = [line for line in tail.splitlines() if line.strip()]
+        for line in lines[-25:]:
+            print("    {0}".format(_redact(line, password)))
+    if not found:
+        print("No stderr.log in the application root.")
+        print("Set PYTRACKING_DEBUG=1 to have the receiver log its own")
+        print("tracebacks, since Passenger may not be writing one here.")
 
 
 def _report_http_probe():
