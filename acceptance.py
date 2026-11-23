@@ -143,10 +143,6 @@ def main():
            "status={0} Content-Length={1!r}".format(
                status, headers.get("Content-Length")))
 
-    status, _, body = request("GET", "/diag/db")
-    record("GET /diag/db", status == 200 and '"db":"ok"' in body.replace(" ", ""),
-           "status={0} body={1!r}".format(status, body.strip()[:120]))
-
     try:
         connection = connect()
     except Exception as exc:

@@ -12,8 +12,6 @@ import os
 import platform
 import sys
 import time
-import urllib.error
-import urllib.request
 
 import pymysql
 from flask import Flask, Response, jsonify, request
@@ -21,9 +19,6 @@ from flask import Flask, Response, jsonify, request
 application = Flask(__name__)
 
 BUILD_MARKER = "pytracking-phase1-landing"
-
-OUTBOUND_TARGET = "https://graph.facebook.com/"
-OUTBOUND_TIMEOUT_SECONDS = 5
 
 # Validation limits
 MAX_BODY_BYTES = 16384  # 16 KB
@@ -391,50 +386,6 @@ def diag_no_content():
     check here means the receiver's silent rejects will be delivered too.
     """
     return _no_content()
-
-
-@application.get("/diag/db")
-def diag_db():
-    connection = None
-    try:
-        connection = pymysql.connect(
-            host=os.environ["DB_HOST"],
-            database=os.environ["DB_NAME"],
-            user=os.environ["DB_USER"],
-            password=os.environ["DB_PASSWORD"],
-            connect_timeout=5,
-        )
-    except Exception as exc:
-        return jsonify({"db": "error", "message": str(exc)})
-    finally:
-        if connection is not None:
-            connection.close()
-    return jsonify({"db": "ok"})
-
-
-def _elapsed_ms(started):
-    return round((time.monotonic() - started) * 1000, 2)
-
-
-@application.get("/diag/outbound")
-def diag_outbound():
-    started = time.monotonic()
-    try:
-        with urllib.request.urlopen(
-            OUTBOUND_TARGET, timeout=OUTBOUND_TIMEOUT_SECONDS
-        ) as response:
-            status_code = response.status
-    except urllib.error.HTTPError as exc:
-        status_code = exc.code
-    except Exception as exc:
-        return jsonify(
-            {
-                "error": type(exc).__name__,
-                "message": str(exc),
-                "elapsed_ms": _elapsed_ms(started),
-            }
-        )
-    return jsonify({"status": status_code, "elapsed_ms": _elapsed_ms(started)})
 
 
 if __name__ == "__main__":

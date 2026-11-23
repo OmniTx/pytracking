@@ -74,6 +74,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module with its routes, and any `Passenger*` directives in nearby
   `.htaccess` files. Redacts the DB password from error messages.
 
+### Removed
+
+- **Public diagnostic routes** (decision D23): `GET /diag/db` and
+  `GET /diag/outbound` exposed database and outbound-egress status on an
+  unauthenticated URL. Both are gone, along with the temporary `/diag/204`
+  probe from D21 and their tests. `/diag/no-content` stays because it returns
+  a bare 204 and reveals nothing.
+- `smoke.py`: it drove Flask's test client in-process, duplicating the unit
+  tests and - critically - unable to observe host framing problems (D21).
+  `acceptance.py` covers the deployment path instead.
+
+### Added
+
+- `DEPLOY.md`: the live cPanel layout (PassengerAppRoot, startup file, where
+  the Git checkout lives, which module actually serves), the rule that the
+  Python panel's Save button rewrites `passenger_wsgi.py` with a
+  self-recursive stub, how to verify the startup file after a pull, and the
+  requirement to keep exactly one copy of the code.
+- `tests/test_phase0.py` now asserts the removed diagnostics stay removed, so
+  they cannot quietly return.
+
 ### Verified
 
 - **Phase 0 and Phase 1 accepted over public HTTPS (2026-11-23), 12/12

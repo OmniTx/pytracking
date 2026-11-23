@@ -90,13 +90,39 @@ curl -i -X POST http://127.0.0.1:5000/api/v2/ev \
   -H 'Origin: https://demo.example.com' \
   -d '{"wk":"demo-write-key","event_id":"evt-1","name":"page_view"}'
 
-curl http://127.0.0.1:5000/healthz        # {"ok":true}
-curl http://127.0.0.1:5000/diag/db        # {"db":"ok"} or error detail
-curl http://127.0.0.1:5000/diag/outbound  # {"status":...,"elapsed_ms":...}
+curl http://127.0.0.1:5000/healthz            # {"ok":true}
+curl -i http://127.0.0.1:5000/diag/no-content # 204, Content-Length: 0
 ```
+
+## Routes
+
+| Route | Purpose |
+| --- | --- |
+| `POST /api/v2/ev` | event receiver (204 on success and on silent rejects) |
+| `GET /healthz` | health check, `{"ok": true}` |
+| `GET /` | landing page with build marker and env-var presence |
+| `GET /diag/no-content` | confirms the host accepts our 204 framing |
+
+Public diagnostics `/diag/db` and `/diag/outbound` were removed before Phase 2
+because they exposed database and egress status; see `DECISIONS.md` D23.
+
+## Deployment
+
+cPanel/Passenger deployment is documented in `DEPLOY.md`: the live layout, why
+you must never press Save in the Python panel, and how to verify the startup
+file after a pull.
 
 On cPanel, Passenger loads `passenger_wsgi.py` and uses the `application`
 object as the WSGI entry point.
+
+## Acceptance testing
+
+`acceptance.py` posts real HTTP to a deployed URL and verifies the whole path
+through Passenger, the proxies and MySQL. Run it against staging:
+
+```sh
+PYTRACKING_BASE_URL=https://staging.example.net python acceptance.py
+```
 
 ## License
 

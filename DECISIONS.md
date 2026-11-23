@@ -61,14 +61,15 @@ The diagnostic connects with `connect_timeout=5` and PyMySQL defaults,
 then closes the connection immediately. The schema work in Phase 1 will
 pin `charset="utf8mb4"` for real connections.
 
-### D9: `/diag/*` routes stay unauthenticated in Phase 0
+### D9: `/diag/*` unauthenticated in Phase 0, removed before Phase 2
 
-`plan.md` line 12 calls `/diag/outbound` an "admin-only route", but no auth
-or user system exists until Phase 4. Owner decision (2026-11-22): keep the
-routes unauthenticated for Phase 0 so the host checks can run immediately;
-add auth when the Phase 4 login system lands. The routes leak only
-connectivity status and can be IP-restricted at the web-server level in the
-meantime.
+`plan.md` line 12 calls `/diag/outbound` an "admin-only route", but no auth or
+user system exists until Phase 4. Owner decision (2026-11-22): keep the routes
+unauthenticated for Phase 0 so the host checks could run immediately.
+
+**Resolved 2026-11-23:** rather than add auth early, the public diagnostics
+were removed once Phase 0 and Phase 1 were accepted over HTTPS (see D23). Only
+`/diag/no-content` remains, which reveals nothing about the system.
 
 ### D10: Any write-key problem returns silent 204
 
@@ -83,7 +84,7 @@ The request `Origin` header must appear in the tenant's `tenant_origins`
 rows. If the header is absent, or the tenant has no configured origins, there
 is nothing to match, so the request gets a silent 204 and nothing is written.
 Failing open was rejected: it would let anyone post events for an
-unconfigured tenant. Owner decision (2026-11-22): keep fail-closed. Add
+unconfigured tenant. Owner decision (2026-11-23): keep fail-closed. Add
 origins via the admin UI / SQL when onboarding a tenant.
 
 ### D12: Migration is idempotent, never destructive
@@ -245,45 +246,63 @@ removed, so the requirement is pinned. Setting the header on a plain
 `Response` does not work - it is stripped again - which is why the earlier
 attempt appeared to change nothing.
 
-### D20: The working app on this host keeps its code in the domain directory
+### D20: Resolved - the deployed layout on `my.herbsworld.net`
 
-A known-good app on the same server (`~/crawler.herbsworld.net/`) has
-`app.py`, `passenger_wsgi.py`, `requirements.txt` and its `.htaccess` **in the
-domain directory**, and that `.htaccess` sets
-`PassengerAppRoot "/home/herbswor/crawler.herbsworld.net"` — the document root
-and the application root are the same directory, and LiteSpeed honours it.
+Settled 2026-11-23. `DEPLOY.md` holds the operational detail; the essentials:
 
-Ours differs: code in `~/repositories/pytracking`, document root
-`~/my.herbsworld.net`. That vhost answers with a LiteSpeed 404 and an empty
-directory listing, so no request reaches Passenger even though `diagnose.py`
-loads all six routes from the code.
+| Piece | Path |
+| --- | --- |
+| Passenger application root | `/home/herbswor/my.herbsworld.net` |
+| Startup file (thin bootstrap) | `/home/herbswor/my.herbsworld.net/passenger_wsgi.py` |
+| Git checkout (real code) | `/home/herbswor/repositories/pytracking` |
+| Module that serves | `/home/herbswor/repositories/pytracking/passenger_wsgi.py` |
+| Python / venv | `/home/herbswor/virtualenv/my.herbsworld.net/3.13/bin/python` |
 
-The same app's `stderr.log` also reveals cPanel's placeholder
-`passenger_wsgi.py`:
+`PassengerAppRoot` points at the **domain directory**, not the checkout. The
+docroot holds only `.htaccess` and a small bootstrap (repo file
+`deploy/passenger_wsgi.py`) that loads the checkout's module by absolute path.
+The landing page's "Executing file" line reports the
+`~/repositories/pytracking` copy, which is how this was confirmed.
+
+That is option B from the original write-up, chosen because the checkout stays
+a clean git tree and the bootstrap is immune to cPanel rewriting the startup
+file with its own placeholder.
+
+**One copy of the code only.** The checkout is the deployed copy; the docroot
+must contain no second copy, or a fix could land in a folder that is not being
+served.
+
+Background: a known-good app on the same host (`~/crawler.herbsworld.net/`)
+keeps its files directly in the domain directory, and its `.htaccess` sets
+`PassengerAppRoot` to that directory. Its `stderr.log` also exposed cPanel's
+placeholder startup file:
 
 ```python
 import imp
 wsgi = imp.load_source('wsgi', 'passenger_wsgi.py')
 ```
 
-That re-imports itself until `RecursionError`, so the app can never start, and
-cPanel rewrites the file on every Save. Any deployment step must end by
-restoring the real module and not saving again afterwards.
+which re-imports itself until `RecursionError`. cPanel rewrites it on every
+Save, which is why `DEPLOY.md` says never to press Save.
 
-Options, awaiting the owner's choice (both documented rather than guessed):
+### D23: Public diagnostic routes removed before Phase 2
 
-- **A. Move the application root to the domain directory** (mirrors the
-  working app): copy the checkout into `~/my.herbsworld.net`, set Application
-  root to `my.herbsworld.net` in the Python panel, then restore the real
-  `passenger_wsgi.py` over cPanel's stub and restart.
-- **B. Keep the checkout in `~/repositories`** and place a small bootstrap
-  `passenger_wsgi.py` in the docroot that loads the repository module by
-  explicit path and re-exports `application`, avoiding a name clash with
-  Passenger's own module name.
+`/diag/db` and `/diag/outbound` reported database and outbound-egress status on
+an unauthenticated public URL. They existed to get Phase 0 accepted on a host
+whose routing was broken; that is done (D22), so both routes and their tests
+are removed and `/diag/204` (a temporary probe from D21) with them.
+
+`/diag/no-content` stays: it returns a bare 204 and reveals nothing, and it is
+the check that catches a regression in the host-specific 204 framing.
+
+`diagnose.py`, `smoke.py` and `acceptance.py` are development tools and must
+not sit on the public host. `smoke.py` was deleted - it drove Flask's test
+client in-process, which duplicated the unit tests and, more importantly, could
+not see host framing problems (D21). `acceptance.py` is kept in the repo and
+run against a staging copy; `diagnose.py` remains for environment checks. See
+`DEPLOY.md`.
 
 ## Open questions
 
-1. **How should `my.herbsworld.net` be wired to the app?** See D20. Either
-   move the application root to the domain directory (mirrors the working app
-   on this host) or keep the checkout in `~/repositories` and add a bootstrap
-   entry point in the docroot.
+None. Phase 2 opens its own.
+
