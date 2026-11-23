@@ -400,6 +400,13 @@ class RawIpProtectionTests(unittest.TestCase):
         resp = self.client.post("/api/v2/ev", json={})
         self.assertEqual(resp.headers.get("Content-Length"), "0")
 
+    def test_no_content_helper_sets_content_length(self):
+        """Werkzeug strips Content-Length on 204; the host then answers 500."""
+        resp = passenger_wsgi.application.test_client().get("/diag/no-content")
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.headers.get("Content-Length"), "0")
+        self.assertEqual(resp.data, b"")
+
     def test_successful_event_returns_bare_204(self):
         conn = _Conn()
         conn.key_row = (1, 1)
