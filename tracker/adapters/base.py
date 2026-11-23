@@ -24,7 +24,6 @@ DEAD = "dead"
 # Statuses worth retrying: request timeout, too early, rate limited, server
 # errors. Everything else in the 4xx range is a permanent request problem.
 RETRYABLE_STATUSES = frozenset([408, 425, 429])
-MAX_ERROR_LEN = 500
 
 
 def post_json(url, payload, headers=None, timeout=10):
@@ -48,14 +47,6 @@ def post_json(url, payload, headers=None, timeout=10):
             return response.status, response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", "replace")
-
-
-def truncate(text):
-    """Trim an error message to what the deliveries column can hold."""
-    if text is None:
-        return None
-    text = str(text)
-    return text[:MAX_ERROR_LEN]
 
 
 class Adapter:

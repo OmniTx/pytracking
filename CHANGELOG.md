@@ -124,6 +124,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failure fails closed, POST echo), and beacon bodies (`text/plain` accepted,
   garbage 400, JSON still works, oversize 413). 36 tests total.
 
+### Removed
+
+- Dead code: `tracker.adapters.base.truncate` and `MAX_ERROR_LEN` (defined but
+  never called; the forwarder slices the error inline), and the unused `DEAD`
+  import in `tracker/forwarder.py`.
+- `forwarder.log` added to `.gitignore` (runtime log).
+
 ### Added - Phase 3
 
 - **Forwarder and provider adapters.** `forwarder.py` runs one pass and exits,

@@ -10,7 +10,7 @@ second run cannot pick up the same delivery (plan.md Phase 3).
 import re
 
 from .adapters import get_adapter
-from .adapters.base import DEAD, RETRY, SUCCESS
+from .adapters.base import RETRY, SUCCESS
 
 DEFAULT_BATCH = 50
 DEFAULT_MAX_ATTEMPTS = 8
