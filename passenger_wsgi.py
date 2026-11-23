@@ -47,13 +47,25 @@ def _log_traceback():
         pass
 
 
-def _no_content():
-    """A 204 with no body and no tracking headers.
+class _NoContentResponse(Response):
+    """A 204 that carries ``Content-Length: 0``.
 
-    Werkzeug would otherwise attach ``Content-Type: text/html``; the receiver
-    must answer with none, so strip it.
+    Werkzeug strips Content-Length from 204 (RFC 7230), and the LiteSpeed stack
+    on this host answers 500 for a 204 without it - verified with
+    /diag/204?mode=, where "plain" 500s and "content-length" returns 204.
+    Re-adding the header after Werkzeug's own processing makes it acceptable,
+    without changing the status code or body.
     """
-    response = Response(status=204)
+
+    def get_wsgi_headers(self, environ):
+        headers = super().get_wsgi_headers(environ)
+        headers["Content-Length"] = "0"
+        return headers
+
+
+def _no_content():
+    """A 204 with no body, no tracking headers, and Content-Length: 0."""
+    response = _NoContentResponse(status=204)
     response.headers.pop("Content-Type", None)
     return response
 
@@ -371,54 +383,12 @@ def landing():
     return Response(html, mimetype="text/html")
 
 
-class _LengthOverride(Response):
-    """A Response that keeps Content-Length on a 204.
-
-    Werkzeug strips Content-Length from 204/304 per RFC 7230, which some
-    servers and proxy layers reject. This re-adds it after that processing.
-    """
-
-    def get_wsgi_headers(self, environ):
-        headers = super().get_wsgi_headers(environ)
-        headers["Content-Length"] = "0"
-        return headers
-
-
-@application.get("/diag/204")
-def diag_204():
-    """Try the framings a 204 can take, to find one the host accepts.
-
-    ``?mode=`` selects the variant; see ``_no_content`` and the diagnostic
-    notes. Each is a valid HTTP response, but server and proxy stacks differ
-    in which ones they pass through.
-    """
-    mode = request.args.get("mode", "plain")
-
-    if mode == "content-type":
-        # Keep Werkzeug's default Content-Type, add nothing else.
-        return Response(status=204)
-
-    if mode == "content-length":
-        # 204 carrying an explicit Content-Length: 0.
-        response = _LengthOverride(status=204)
-        response.headers.pop("Content-Type", None)
-        return response
-
-    if mode == "empty-200":
-        # Fallback shape: an empty body with an ordinary 200.
-        return Response("", status=200, mimetype="text/plain")
-
-    # "plain": what the receiver returns - 204 with no headers, no body.
-    return _no_content()
-
-
 @application.get("/diag/no-content")
 def diag_no_content():
-    """Return a bare 204, to test how the server handles a bodyless response.
+    """Return a bare 204, to confirm the host accepts our 204 framing.
 
-    /healthz (200 + JSON) works through Passenger on this host, but every 204
-    from the receiver arrives as a 500. This isolates whether the status code
-    itself is the problem rather than the view logic.
+    This host answers 500 for a 204 without Content-Length, so a passing
+    check here means the receiver's silent rejects will be delivered too.
     """
     return _no_content()
 

@@ -41,12 +41,13 @@ It accepts any request body and always returns 204 with an empty body and
 no response headers. Validation, tenant resolution, dedupe, hashing, and
 rate limiting are Phase 1 work.
 
-### D6: The 204 response carries no headers at all
+### D6: The 204 response carries no tracking headers
 
-To keep the 204 truly empty, the route strips the default `Content-Type`
-header. Werkzeug already omits `Content-Length` for 204. The test suite
-asserts no `Content-Type`, `Content-Length`, `Set-Cookie`, or `X-*`
-headers on the response.
+To keep the 204 empty, the route strips the default `Content-Type` header, and
+the tests assert there is no `Content-Type`, `Set-Cookie`, or `X-*` header.
+The response does carry `Content-Length: 0`, which is not a tracking header
+and is required by this host - see D21, which supersedes the earlier "no
+headers at all" wording.
 
 ### D7: Tests run on stdlib `unittest`
 
@@ -189,6 +190,25 @@ created and removed, so the database was left as found.
 Consequence: Phase 0 acceptance and Phase 1 schema/ingestion are proven on the
 host. The only unproven link is Passenger's HTTP routing, which is host
 configuration rather than code.
+
+### D21: A 204 must carry Content-Length: 0 on this host
+
+LiteSpeed (behind the `Pro Cloudify` proxy) answers **500** for a 204 response
+with no `Content-Length`. Werkzeug strips that header from 204 per RFC 7230,
+so the receiver's silent rejects arrived as 500s while every `jsonify` path
+worked, and the same code returned 204 under Flask's test client.
+
+Established by measurement, not deduction: `GET /diag/204?mode=` returned
+`plain` 500, `content-type` 500 (interrupted, inconclusive), `content-length`
+**204**, and `empty-200` 200. `_no_content()` therefore subclasses `Response`
+and re-adds `Content-Length: 0` in `get_wsgi_headers`, after Werkzeug's own
+processing, which is the only place the header survives.
+
+Consequence for tests: the 204 assertion changed from "no headers at all" to
+"`Content-Length: 0` and nothing else". Seven tests fail if the header is
+removed, so the requirement is pinned. Setting the header on a plain
+`Response` does not work - it is stripped again - which is why the earlier
+attempt appeared to change nothing.
 
 ### D20: The working app on this host keeps its code in the domain directory
 

@@ -45,11 +45,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **204 responses returned 500 on the real host.** LiteSpeed (behind the
+  `Pro Cloudify` proxy) rejects a 204 with no `Content-Length`, and Werkzeug
+  strips that header per RFC 7230. `_no_content()` now subclasses `Response`
+  and re-adds `Content-Length: 0` after Werkzeug's header processing, so
+  silent rejects and successful ingests both deliver as 204. Found by
+  measurement via `/diag/204?mode=`, not by guessing. Seven tests pin the
+  header so it cannot regress.
 - `POST /api/v2/ev` 204 responses were again carrying `Content-Type: text/html`
   after the Phase 1 rewrite, contradicting decision D6 ("no tracking
   headers"). All 204s now go through a `_no_content()` helper that strips it,
-  and six tests assert the response has no headers at all in every branch
-  (success, duplicate, unknown key, inactive key, bad origin, missing key).
+  and the tests assert the response carries no tracking headers in every
+  branch (success, duplicate, unknown key, inactive key, bad origin, missing
+  key).
 - `.env.example` entries for the deployed host were the source of a 1045
   "Access denied": the host's `DB_USER` was a truncated cPanel user name.
   Recorded in DECISIONS.md as D18.

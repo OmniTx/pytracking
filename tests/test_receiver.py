@@ -385,12 +385,20 @@ class RawIpProtectionTests(unittest.TestCase):
         self.assertNotIn(secret_key, stored_payload)
         self.assertNotIn("wk", json.loads(stored_payload))
 
-    # --- the 204 must carry no headers at all (decision D6) -----------------
+    # --- the 204 framing the host requires (decision D21) -------------------
 
     def _assert_bare_204(self, resp):
         self.assertEqual(resp.status_code, 204)
         self.assertEqual(resp.data, b"")
-        self.assertEqual(dict(resp.headers), {})
+        headers = dict(resp.headers)
+        # LiteSpeed answers 500 for a 204 without Content-Length, so it must
+        # be present; everything else (Content-Type, Set-Cookie, X-*) must not.
+        self.assertEqual(headers.pop("Content-Length", None), "0")
+        self.assertEqual(headers, {})
+
+    def test_204_carries_content_length(self):
+        resp = self.client.post("/api/v2/ev", json={})
+        self.assertEqual(resp.headers.get("Content-Length"), "0")
 
     def test_successful_event_returns_bare_204(self):
         conn = _Conn()
