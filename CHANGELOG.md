@@ -126,6 +126,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Verified
 
+- **Phase 2 accepted in a real browser against the live host (2026-11-23).**
+  Headless Edge loaded the test page from `http://localhost:8000` (a true
+  cross-origin peer) and:
+  - a `text/plain` fetch returned a readable 204 (simple request);
+  - an `application/json` fetch returned 204, which is only possible if the
+    preflight succeeded;
+  - the SDK loaded, `crypto.subtle` was available, and its `purchase` sent
+    538 bytes.
+  MySQL then showed three rows with `source_origin = http://localhost:8000`:
+  `page_view`, `add_to_cart`, and `purchase` carrying
+  `user_data.em = 6a6c2619...` and `user_data.ph = 602cd7fb...` - exactly
+  SHA-256 of the trimmed/lowercased email and normalised phone, with no raw
+  PII stored. The `sdk-test` tenant and its events were removed afterwards.
+
 - **Phase 0 and Phase 1 accepted over public HTTPS (2026-11-23), 12/12
   checks.** `acceptance.py` posts real HTTP to `https://my.herbsworld.net`:
   `/healthz` 200, 204 framing with `Content-Length: 0`, `/diag/db` `{"db":"ok"}`,

@@ -377,4 +377,20 @@ post for that tenant.
 
 None. Phase 2's open questions are recorded above as decisions.
 
+**Phase 2 accepted 2026-11-23** in a real browser (headless Edge) against the
+live host, from a cross-origin page at `http://localhost:8000`. Both fetches -
+`text/plain` and `application/json` - returned a readable 204, the latter
+proving the preflight passed; the SDK loaded with `crypto.subtle` available and
+sent its event. The stored rows confirmed tenant resolution from the write key
+(`source_origin` was the merchant origin, not the collector's), and
+`user_data.em` / `user_data.ph` matched SHA-256 of the normalised email and
+phone, with no raw PII anywhere in `payload_json`. The test tenant, its key,
+both origins and its events were deleted afterwards.
+
+Note: `_fbp` / `_fbc` were absent from that run because the headless profile
+had no Meta cookies. The SDK does read them - verified in the Node contract
+test, which sent `fbp=fb.1.1700000000.111` and `fbc=fb.1.1700000000.222` - but
+a live browser only has them after a Meta pixel has set them.
+
+
 
