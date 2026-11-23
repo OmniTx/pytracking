@@ -191,6 +191,41 @@ Consequence: Phase 0 acceptance and Phase 1 schema/ingestion are proven on the
 host. The only unproven link is Passenger's HTTP routing, which is host
 configuration rather than code.
 
+**Superseded by D22:** routing was subsequently fixed and the checks now run
+over the public HTTPS URL, not only in-process.
+
+### D22: Phase 0 and Phase 1 accepted over the public HTTPS URL
+
+`acceptance.py` posts real HTTP to `https://my.herbsworld.net`, so Passenger,
+LiteSpeed, the proxies and MySQL are all exercised - the combination that
+exposed the missing-`Content-Length` bug (D21), which the in-process tests
+could not see.
+
+Result, 2026-11-23: **12 of 12 checks passed.**
+
+```
+[PASS] GET /healthz over HTTPS             200 {"ok":true}
+[PASS] 204 framing accepted by the host    204, Content-Length: 0
+[PASS] GET /diag/db                        200 {"db":"ok"}
+[PASS] valid key returns 204 over HTTPS    204
+[PASS] the event landed in MySQL           1 row
+[PASS] client IP stored as a 64-char hash  len=64
+[PASS] user_agent and source_origin stored
+[PASS] consent_state recorded as 1
+[PASS] write key absent from the stored payload
+[PASS] duplicate event_id stores nothing extra    rows=1
+[PASS] bad origin writes nothing                  rows=1
+[PASS] oversize body returns 413
+```
+
+The stored payload reads
+`{"event_id":"acc-...","name":"page_view","consent_state":true}`, confirming
+the write key is redacted (D15). The throwaway tenant was removed afterwards.
+
+Two acceptance paths now exist and both matter: `smoke.py` (in-process, fast,
+proves the code) and `acceptance.py` (over HTTPS, proves the deployment). Only
+the second would have caught D21.
+
 ### D21: A 204 must carry Content-Length: 0 on this host
 
 LiteSpeed (behind the `Pro Cloudify` proxy) answers **500** for a 204 response

@@ -76,6 +76,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Verified
 
+- **Phase 0 and Phase 1 accepted over public HTTPS (2026-11-23), 12/12
+  checks.** `acceptance.py` posts real HTTP to `https://my.herbsworld.net`:
+  `/healthz` 200, 204 framing with `Content-Length: 0`, `/diag/db` `{"db":"ok"}`,
+  a valid key returning 204, the event landing in MySQL, a 64-character IP
+  hash, `user_agent`/`source_origin` stored, `consent_state` recorded,
+  the write key absent from the payload, duplicate suppression, a bad origin
+  writing nothing, and an oversize body returning 413. Fixture removed.
+
 - **Phase 0 acceptance cleared on the real host (2026-11-23), 8/8 checks.**
   `smoke.py` against the deployed app, real MySQL, and real outbound network:
   health returns `{"ok": true}`, `/diag/db` returns `{"db": "ok"}`, and
