@@ -418,9 +418,21 @@ still counts as an attempt. On a retryable failure the next attempt is
 `base * 2^(attempts-1)` seconds, capped: defaults 60s base, 3600s cap, 8
 attempts, then dead-letter. Success is a 2xx; `408`, `425`, `429` and any 5xx
 retry; other 4xx dead-letter immediately; transport failures (DNS, TLS,
-timeout) retry. TikTok is the exception: it returns 200 with a `code` in the
-body, so its adapter treats `code == 0` as success and a non-zero code as dead
-unless it is one of its rate-limit codes.
+timeout) retry. Two adapters inspect the body because status alone is
+misleading:
+
+- **Meta** returns HTTP 400 for throttling (`code` 4, 17, 32, 341, 613,
+  80004) and transient trouble (1, 2), so those codes retry while other 400s
+  dead-letter. This matters: a blanket "400 is permanent" dead-letters rate
+  limits that would have succeeded seconds later.
+- **TikTok** returns 200 with a `code` in the body, so `code == 0` is success
+  and a non-zero code is dead unless it is one of its rate-limit codes.
+
+Live probe note: a dataset-scoped CAPI token can **write** events but cannot
+`GET /{dataset_id}`. That read returns `(#100) Missing Permission` even for a
+working token, so token validity must be checked by POSTing a deliberately
+invalid payload (`{"data": []}`) and confirming the error is about the payload
+(`param data must be non-empty`), not about permissions.
 
 **Concurrency is a claim, not `SKIP LOCKED`.** One statement takes the work:
 

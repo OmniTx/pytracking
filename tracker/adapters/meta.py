@@ -1,11 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
 """Meta Conversions API adapter."""
 
-from .base import META_EVENT_NAMES, Adapter, custom_data, event_time, post_json, source, user_data
+import json
+
+from .base import (
+    DEAD,
+    RETRY,
+    META_EVENT_NAMES,
+    Adapter,
+    custom_data,
+    event_time,
+    post_json,
+    source,
+    user_data,
+)
 
 #: Fields the Events API accepts inside user_data. Anything else in the stored
 #: payload is not forwarded, so an unexpected key cannot leak.
 _META_USER_FIELDS = ("em", "ph", "fbp", "fbc", "client_user_agent", "country", "zip")
+
+#: Meta reports throttling and transient trouble as HTTP 400 with an error
+#: code in the body, so status alone would dead-letter a retryable failure.
+#: 1 unknown, 2 service unavailable, 4/17/32/341/613/80004 rate limits.
+_RETRYABLE_CODES = frozenset([1, 2, 4, 17, 32, 341, 613, 80004])
 
 
 class MetaAdapter(Adapter):
@@ -54,3 +71,20 @@ class MetaAdapter(Adapter):
 
     def send(self, payload):
         return post_json(self.endpoint(), payload, timeout=self.timeout)
+
+    def classify_error(self, status_code, body):
+        base = super().classify_error(status_code, body)
+        if base != DEAD:
+            return base
+        # A 400 may still be a rate limit or a transient Meta problem; the
+        # body carries the code that distinguishes it from a bad request.
+        try:
+            parsed = json.loads(body or "{}")
+        except ValueError:
+            return base
+        error = parsed.get("error")
+        if not isinstance(error, dict):
+            return base
+        if error.get("code") in _RETRYABLE_CODES:
+            return RETRY
+        return base

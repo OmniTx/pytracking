@@ -162,6 +162,22 @@ class MetaAdapterTests(unittest.TestCase):
         with HTTPServerFixture("{}", 429) as server:
             self.assertEqual(self.make(server.url).deliver(make_event())[2], RETRY)
 
+    def test_400_rate_limit_code_is_retry(self):
+        """Meta reports throttling as HTTP 400 with an error code in the body."""
+        with HTTPServerFixture(
+                '{"error":{"code":613,"message":"Calls to this api have exceeded the rate limit"}}',
+                400) as server:
+            status, body, verdict = self.make(server.url).deliver(make_event())
+            self.assertEqual(status, 400)
+            self.assertEqual(verdict, RETRY)
+
+    def test_400_invalid_payload_code_is_dead(self):
+        """The real response seen when data is malformed: permanent, not retried."""
+        with HTTPServerFixture(
+                '{"error":{"code":100,"message":"param data must be non-empty."}}',
+                400) as server:
+            self.assertEqual(self.make(server.url).deliver(make_event())[2], DEAD)
+
 
 class GA4AdapterTests(unittest.TestCase):
     class _Local(GA4Adapter):
