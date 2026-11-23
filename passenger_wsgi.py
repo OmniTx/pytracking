@@ -371,6 +371,47 @@ def landing():
     return Response(html, mimetype="text/html")
 
 
+class _LengthOverride(Response):
+    """A Response that keeps Content-Length on a 204.
+
+    Werkzeug strips Content-Length from 204/304 per RFC 7230, which some
+    servers and proxy layers reject. This re-adds it after that processing.
+    """
+
+    def get_wsgi_headers(self, environ):
+        headers = super().get_wsgi_headers(environ)
+        headers["Content-Length"] = "0"
+        return headers
+
+
+@application.get("/diag/204")
+def diag_204():
+    """Try the framings a 204 can take, to find one the host accepts.
+
+    ``?mode=`` selects the variant; see ``_no_content`` and the diagnostic
+    notes. Each is a valid HTTP response, but server and proxy stacks differ
+    in which ones they pass through.
+    """
+    mode = request.args.get("mode", "plain")
+
+    if mode == "content-type":
+        # Keep Werkzeug's default Content-Type, add nothing else.
+        return Response(status=204)
+
+    if mode == "content-length":
+        # 204 carrying an explicit Content-Length: 0.
+        response = _LengthOverride(status=204)
+        response.headers.pop("Content-Type", None)
+        return response
+
+    if mode == "empty-200":
+        # Fallback shape: an empty body with an ordinary 200.
+        return Response("", status=200, mimetype="text/plain")
+
+    # "plain": what the receiver returns - 204 with no headers, no body.
+    return _no_content()
+
+
 @application.get("/diag/no-content")
 def diag_no_content():
     """Return a bare 204, to test how the server handles a bodyless response.
