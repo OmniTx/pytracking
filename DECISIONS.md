@@ -472,10 +472,36 @@ URL.
 Open for Phase 5: encrypt `config_json`, and decide whether credentials also
 need rotating on a schedule.
 
+**Phase 3 accepted 2026-11-23** against the live host and real providers. One
+`page_view` event posted to the receiver (`live-c4e8825e6fe4`, origin
+`https://my.herbsworld.net`, hashed email in `user_data`) produced two
+deliveries, both on the **first attempt**:
+
+```
+delivery 4  dest 1 (meta)  delivered  attempts=1  code=200
+delivery 5  dest 2 (ga4)   delivered  attempts=1  code=204
+```
+
+That is the full chain in production: receiver ingest, forwarder
+materialisation, claim, adapter `map`/`send`, provider acceptance, and status
+recording. Before this, a first attempt failed with Meta `Invalid OAuth access
+token` (400, `code 190`) and dead-lettered at attempts=1 - correct behaviour
+for a permanent credential fault, and the reason the dead-letter path was
+trustworthy enough to diagnose from. Replacing the stored token fixed it.
+
+GA4 returned 204, which as noted above is not proof of ingestion; only the
+GA4 Realtime view confirms a recorded hit.
+
+Also observed in production: the GA4 delivery for the earlier stale event
+succeeded on its **second** attempt, so the backoff-and-retry path has run for
+real, not only in tests.
+
 ## Open questions
 
 None. Phase 3's one open item (credential encryption) is recorded in D25 as
-Phase 5 work.
+Phase 5 work. Phase 4 (admin UI) opens its own.
+
+
 
 
 

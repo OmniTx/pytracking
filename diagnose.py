@@ -111,13 +111,14 @@ def main():
             with connection.cursor() as cursor:
                 cursor.execute("SHOW TABLES")
                 tables = [row[0] for row in cursor.fetchall()]
+            if tables:
+                _field("connect", "OK")
+                _field("tables", ", ".join(tables))
+                _report_queue(connection, set(tables))
+            else:
+                _field("connect", "OK, but no tables - run db/run_migration.py")
         finally:
             connection.close()
-        if tables:
-            _field("connect", "OK")
-            _field("tables", ", ".join(tables))
-        else:
-            _field("connect", "OK, but no tables - run db/run_migration.py")
     except KeyError as exc:
         _field("connect", "SKIPPED: {0} not set".format(exc))
     except Exception as exc:
@@ -313,6 +314,124 @@ def _report_passenger_logs():
         print("No stderr.log in the application root.")
         print("Set PYTRACKING_DEBUG=1 to have the receiver log its own")
         print("tracebacks, since Passenger may not be writing one here.")
+
+
+_SECRET_CONFIG_KEYS = {"access_token", "api_secret", "token", "secret"}
+_SHOWN_CONFIG_KEYS = ("pixel_id", "pixel_code", "measurement_id", "api_version",
+                      "test_event_code")
+
+
+def _report_queue(connection, tables):
+    """Summarise tenancy, destinations and the delivery queue.
+
+    Read-only, and deliberately prints no credential: config values are shown
+    only for identifiers, while tokens and secrets appear as set or MISSING.
+    """
+    import json
+
+    print("\n--- tenancy ---")
+    if "tenants" in tables:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT id, slug, status FROM tenants ORDER BY id")
+                tenants = cursor.fetchall()
+                for tenant_id, slug, status in tenants:
+                    active_keys = 0
+                    origins = []
+                    if "tenant_keys" in tables:
+                        cursor.execute(
+                            "SELECT COUNT(*) FROM tenant_keys "
+                            "WHERE tenant_id = %s AND active = 1", (tenant_id,))
+                        active_keys = cursor.fetchone()[0]
+                    if "tenant_origins" in tables:
+                        cursor.execute(
+                            "SELECT origin FROM tenant_origins WHERE tenant_id = %s "
+                            "ORDER BY origin", (tenant_id,))
+                        origins = [row[0] for row in cursor.fetchall()]
+                    _field("tenant", "id={0} slug={1!r} {2} active_keys={3}".format(
+                        tenant_id, slug, status, active_keys))
+                    _field("origins", ", ".join(origins) or "none")
+        except Exception as exc:
+            _field("tenancy", "FAILED: {0}".format(type(exc).__name__))
+    else:
+        print("no tenants table")
+
+    if "destinations" in tables:
+        print("\n--- destinations ---")
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, tenant_id, type, name, active, config_json "
+                    "FROM destinations ORDER BY id")
+                for row in cursor.fetchall():
+                    dest_id, tenant_id, dest_type, name, active, config = row
+                    try:
+                        parsed = json.loads(config) if config else {}
+                    except (TypeError, ValueError):
+                        parsed = {}
+                    if not isinstance(parsed, dict):
+                        parsed = {}
+                    shown = ["{0}={1!r}".format(key, parsed[key])
+                             for key in _SHOWN_CONFIG_KEYS if key in parsed]
+                    secrets = ["{0}={1}".format(
+                        key,
+                        "set" if parsed.get(key) else "MISSING")
+                        for key in sorted(_SECRET_CONFIG_KEYS) if key in parsed]
+                    _field("destination", "id={0} tenant={1} type={2} name={3!r} "
+                           "active={4}".format(dest_id, tenant_id, dest_type,
+                                               name, active))
+                    if shown:
+                        _field("config", ", ".join(shown))
+                    if secrets:
+                        _field("credentials", ", ".join(secrets))
+        except Exception as exc:
+            _field("destinations", "FAILED: {0}".format(type(exc).__name__))
+
+    if "deliveries" in tables:
+        print("\n--- deliveries ---")
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT status, COUNT(*) FROM deliveries GROUP BY status "
+                    "ORDER BY status")
+                counts = ["{0}={1}".format(status, count)
+                          for status, count in cursor.fetchall()]
+                _field("by status", ", ".join(counts) or "empty")
+
+                cursor.execute(
+                    "SELECT d.id, d.destination_id, dest.type, d.status, "
+                    "       d.attempts, d.last_status_code, d.last_error "
+                    "FROM deliveries d "
+                    "LEFT JOIN destinations dest ON dest.id = d.destination_id "
+                    "ORDER BY d.id DESC LIMIT 10")
+                rows = cursor.fetchall()
+                for delivery_id, dest_id, dest_type, status, attempts, code, error in rows:
+                    _field(
+                        "delivery",
+                        "id={0} dest={1}({2}) {3} attempts={4} code={5}".format(
+                            delivery_id, dest_id, dest_type or "?", status,
+                            attempts, code))
+                    if error:
+                        message = error
+                        try:
+                            from tracker.forwarder import redact as redact_forwarder
+
+                            message = redact_forwarder(error)
+                        except Exception:
+                            message = _redact(error, "")
+                        print("    {0}".format(message[:200]))
+                if not rows:
+                    print("    none")
+        except Exception as exc:
+            _field("deliveries", "FAILED: {0}".format(type(exc).__name__))
+
+    if "events" in tables:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) FROM events")
+                _field("events", str(cursor.fetchone()[0]))
+        except Exception:
+            pass
 
 
 def _report_http_probe():

@@ -274,6 +274,32 @@ WHERE id = <delivery id>;
 A stuck row (a run killed mid-send) becomes claimable again when
 `locked_until` passes; nothing else is needed.
 
+### Inspect without writing SQL
+
+`diagnose.py` (run from the panel, path only) now includes a read-only
+summary after the connection check: tenants with active-key counts and
+origins, destinations with their identifier settings, credential keys reported
+only as `set`/`MISSING`, delivery counts by status, and the last ten
+deliveries with their status code and error. Nothing secret is printed, so
+its output is safe to share.
+
+```
+--- tenancy ---
+tenant     id=1 slug='herbsworld' active active_keys=1
+origins    https://herbsworld.net, https://my.herbsworld.net
+
+--- destinations ---
+destination  id=1 tenant=1 type=meta name='live' active=1
+config       pixel_id='118...', api_version='v20.0'
+credentials  access_token=set
+
+--- deliveries ---
+by status  delivered=2
+delivery   id=5 dest=2(ga4) delivered attempts=1 code=204
+delivery   id=4 dest=1(meta) delivered attempts=1 code=200
+```
+
+
 ## Public routes
 
 | Route | Purpose |

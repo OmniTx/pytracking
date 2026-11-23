@@ -159,6 +159,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Verified
 
+- **Phase 3 accepted against real providers (2026-11-23).** A live `page_view`
+  event (`live-c4e8825e6fe4`, origin `https://my.herbsworld.net`, hashed email
+  in `user_data`) produced two deliveries, both delivered on the first attempt:
+  Meta returned **200**, GA4 returned **204**. This exercises the whole chain
+  in production: ingest, materialisation, claim, adapter send, provider
+  acceptance, status recording. An earlier attempt dead-lettered correctly on
+  Meta's `Invalid OAuth access token` (400), and a stale GA4 delivery succeeded
+  on its second attempt, so retry and dead-letter have both run for real.
 - **Phase 2 accepted in a real browser against the live host (2026-11-23).**
   Headless Edge loaded the test page from `http://localhost:8000` (a true
   cross-origin peer) and:
