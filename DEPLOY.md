@@ -181,6 +181,99 @@ DELETE FROM tenant_origins WHERE tenant_id = <id>;
 DELETE FROM tenants  WHERE id = <id>;
 ```
 
+## Forwarder and destinations (Phase 3)
+
+### Apply the migration
+
+```sh
+python db/run_migration.py
+```
+
+With no `--file` it applies every migration in `migrations/` in order, so this
+adds `destinations` and `deliveries` on top of the Phase 1 tables. Every
+migration uses `CREATE TABLE IF NOT EXISTS`, so re-running is safe.
+
+### Add a destination
+
+Credentials live in `destinations.config_json`. Pick the fields the adapter
+needs:
+
+```sql
+-- Meta Conversions API
+INSERT INTO destinations (tenant_id, type, name, config_json, active) VALUES
+  (<tenant id>, 'meta', 'live', JSON_OBJECT(
+     'pixel_id', '<pixel id>',
+     'access_token', '<system user token>',
+     'api_version', 'v20.0'), 1);
+
+-- GA4 Measurement Protocol
+INSERT INTO destinations (tenant_id, type, name, config_json, active) VALUES
+  (<tenant id>, 'ga4', 'live', JSON_OBJECT(
+     'measurement_id', 'G-XXXXXXX',
+     'api_secret', '<measurement protocol secret>'), 1);
+
+-- TikTok Events API
+INSERT INTO destinations (tenant_id, type, name, config_json, active) VALUES
+  (<tenant id>, 'tiktok', 'live', JSON_OBJECT(
+     'pixel_code', '<pixel code>',
+     'access_token', '<events api token>'), 1);
+```
+
+A meta destination can also take `"test_event_code"` to send to the Events
+Manager test view. `active = 0` stops new deliveries without deleting history.
+
+### Cron
+
+cPanel -> Cron Jobs -> once per minute:
+
+```
+/home/herbswor/virtualenv/my.herbsworld.net/3.13/bin/python /home/herbswor/repositories/pytracking/forwarder.py >/dev/null 2>&1
+```
+
+The script adds its own directory to `sys.path`, so it does not depend on the
+working directory cron uses.
+
+### Verify without waiting for cron
+
+Run it from the panel (path only) or over SSH:
+
+```
+/home/herbswor/repositories/pytracking/forwarder.py
+```
+
+It prints one pass:
+
+```
+materialised: 3
+claimed: 3
+delivered: 3
+retried: 0
+dead: 0
+```
+
+Then inspect the queue:
+
+```sql
+SELECT status, COUNT(*) FROM deliveries GROUP BY status;
+
+SELECT id, destination_id, status, attempts, next_attempt_at,
+       last_status_code, LEFT(last_error, 120) AS error
+FROM deliveries
+ORDER BY id DESC LIMIT 20;
+```
+
+A delivery is due again once `next_attempt_at` passes and its lock has expired.
+Requeue a dead letter after fixing the cause:
+
+```sql
+UPDATE deliveries SET status = 'pending', attempts = 0,
+       next_attempt_at = NOW(), locked_until = NULL, claim_token = NULL
+WHERE id = <delivery id>;
+```
+
+A stuck row (a run killed mid-send) becomes claimable again when
+`locked_until` passes; nothing else is needed.
+
 ## Public routes
 
 | Route | Purpose |

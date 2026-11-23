@@ -95,7 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/test_phase0.py` now asserts the removed diagnostics stay removed, so
   they cannot quietly return.
 
-### Added
+### Added - Phase 2
 
 - **Phase 2 browser SDK**, `static/pytracking.js`, served at
   `/static/pytracking.js`. Vanilla IIFE, no dependencies, no build step.
@@ -123,6 +123,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests: CORS preflight (registered vs unregistered origin, no-origin, DB
   failure fails closed, POST echo), and beacon bodies (`text/plain` accepted,
   garbage 400, JSON still works, oversize 413). 36 tests total.
+
+### Added - Phase 3
+
+- **Forwarder and provider adapters.** `forwarder.py` runs one pass and exits,
+  for cron to start every minute; it materialises deliveries, claims due rows,
+  sends, backs off, and dead-letters.
+- `db/migrations/002_deliveries.sql`: `destinations` (type, name, config JSON,
+  active, unique per tenant/type/name) and `deliveries` (status, attempts,
+  next_attempt_at, lock and claim columns, last status/error, unique on
+  `(event_row_id, destination_id)`).
+- `tracker/adapters/`: `Adapter` base with `map`, `send`, `classify_error`, and
+  built-in `meta` (Conversions API), `ga4` (Measurement Protocol) and `tiktok`
+  (Events API 1.3) adapters. Private add-ons load through the
+  `tracker.adapters` entry-point group; the core never imports them, and a
+  broken plugin cannot stop a run. Outbound HTTP uses stdlib `urllib`.
+- `tracker/store.py`: MySQL store. Materialisation is one idempotent
+  `INSERT IGNORE ... SELECT`; claiming is `UPDATE ... ORDER BY ... LIMIT` with
+  a per-run token and `locked_until`, so concurrent runs cannot take the same
+  delivery and a crashed run releases its rows.
+- Retry policy: `attempts` increments at claim time; delays are
+  `base * 2^(attempts-1)` capped (defaults 60s, cap 3600s, 8 attempts). 2xx is
+  success; 408/425/429 and 5xx retry; other 4xx dead-letter; transport errors
+  retry.
+- Error text is passed through a redactor that strips `api_secret=` and
+  `access_token=` before it reaches `deliveries.last_error`.
+- `db/run_migration.py` now applies every migration in filename order when
+  given no `--file`, so the panel needs only a path.
+- Tests: adapters against a local fake HTTP server (payload mapping, provider
+  event names, user-data whitelisting, 2xx/4xx/5xx/429 classification, TikTok
+  body-code handling, registry, redaction) and forwarder logic against an
+  in-memory store (success, retry with backoff, attempt exhaustion, immediate
+  dead-letter, transport failure, unknown adapter, missing rows, and two runs
+  never claiming the same delivery). 67 tests total.
 
 ### Verified
 

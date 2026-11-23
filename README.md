@@ -16,13 +16,20 @@ UI, hardening) are not built yet. See `plan.md` for the roadmap and
 
 ```
 passenger_wsgi.py       WSGI entry point (Passenger), defines `application`
+forwarder.py            One forwarder pass, started by cron
 requirements.txt        Pinned dependencies (flask, PyMySQL)
 .env.example            Environment variable template (copy to .env)
-db/migrations/001_init.sql  Phase 1 schema (tenants, keys, origins, events)
-db/run_migration.py     Executes a migration SQL file
-tests/test_phase0.py    Offline tests for health/diagnostic routes
-tests/test_receiver.py  Offline data-protection tests for the receiver
+tracker/adapters/       Adapter base + meta, ga4, tiktok
+tracker/forwarder.py    Queue logic: claim, send, back off, dead-letter
+tracker/store.py        MySQL store for the forwarder
+db/migrations/001_init.sql       Phase 1: tenants, keys, origins, events
+db/migrations/002_deliveries.sql Phase 3: destinations, deliveries
+db/run_migration.py     Applies migrations (all of them by default)
+static/pytracking.js    Browser SDK
+static/test.html        SDK test page
+tests/                  Offline tests, no network beyond 127.0.0.1
 DECISIONS.md            Ambiguities resolved and open questions
+DEPLOY.md               cPanel layout, migration, cron, verification
 CHANGELOG.md            Change history
 ```
 
@@ -129,6 +136,33 @@ because they exposed database and egress status; see `DECISIONS.md` D23.
 Email and phone are SHA-256 hashed in the browser, so raw values are never
 transmitted. The receiver only accepts origins listed in `tenant_origins` for
 that tenant; see `DECISIONS.md` D24 for the CORS policy and payload shape.
+
+## Forwarder
+
+The receiver never calls a provider. `forwarder.py` does all outbound work and
+is meant to be started by cron every minute:
+
+```sh
+python forwarder.py                  # one pass
+python forwarder.py --limit 100      # claim more per pass
+```
+
+One pass materialises missing deliveries, claims what is due, sends, retries
+with exponential backoff, and dead-letters after the attempt limit. Delivery
+rows live in the `deliveries` table; provider settings in `destinations`:
+
+```sql
+INSERT INTO destinations (tenant_id, type, name, config_json, active) VALUES
+  (1, 'meta', 'live', JSON_OBJECT(
+     'pixel_id', '1234567890', 'access_token', 'EAAB...'), 1),
+  (1, 'ga4', 'live', JSON_OBJECT(
+     'measurement_id', 'G-XXXXXXX', 'api_secret', '...'), 1);
+```
+
+Built-in adapter types are `meta`, `ga4` and `tiktok`. Private adapters can be
+installed under the `tracker.adapters` entry point; the core never imports
+them. Credential encryption at rest is Phase 5 work (D25) - for now
+`config_json` is stored in clear.
 
 ## Deployment
 

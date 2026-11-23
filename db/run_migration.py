@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Run a migration SQL file against a MySQL database.
+"""Run migration SQL files against a MySQL database.
 
 Usage::
 
-    python db/run_migration.py
-    python db/run_migration.py --file db/migrations/001_init.sql
+    python db/run_migration.py                 # every migration, in order
+    python db/run_migration.py --file db/migrations/002_deliveries.sql
 
-With no arguments the file defaults to ``001_init.sql`` next to this script,
-so it can be run from a hosting panel that only accepts a script path.
+With no arguments it applies every ``*.sql`` in ``migrations/`` in filename
+order, so a hosting panel that only accepts a script path applies the whole
+schema. Every migration is idempotent (``CREATE TABLE IF NOT EXISTS``), which
+makes re-running safe.
 
 Environment variables::
 
@@ -21,34 +23,38 @@ stdout. No dependencies beyond PyMySQL.
 """
 
 import argparse
+import glob
 import os
 import sys
 
 import pymysql
 
-DEFAULT_SQL_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "migrations", "001_init.sql"
-)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MIGRATIONS_DIR = os.path.join(SCRIPT_DIR, "migrations")
+
+
+def all_migrations():
+    """Return every migration file, in filename order."""
+    return sorted(glob.glob(os.path.join(MIGRATIONS_DIR, "*.sql")))
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Run a Phase-N migration SQL file."
+        description="Run migration SQL files (all by default)."
     )
     parser.add_argument(
         "--file",
         dest="sql_file",
-        default=DEFAULT_SQL_FILE,
-        help="Path to the SQL migration file (default: 001_init.sql).",
+        default=None,
+        help="Run only this file (default: every file in migrations/).",
     )
     return parser.parse_args(argv)
 
 
-def run_migration(sql_file):
-    """Execute *sql_file* inside a single transaction."""
-    connection = None
+def connect():
+    """Open the MySQL connection, exiting with a message if it fails."""
     try:
-        connection = pymysql.connect(
+        return pymysql.connect(
             host=os.environ["DB_HOST"],
             database=os.environ["DB_NAME"],
             user=os.environ["DB_USER"],
@@ -60,6 +66,9 @@ def run_migration(sql_file):
         print(f"FATAL: unable to connect to MySQL: {exc}")
         sys.exit(1)
 
+
+def run_migration(sql_file, connection):
+    """Execute *sql_file* on *connection*, committing on success."""
     with open(sql_file, encoding="utf-8") as fh:
         sql = fh.read()
 
@@ -73,13 +82,11 @@ def run_migration(sql_file):
                 applied += 1
         connection.commit()
         print(f"MIGRATION OK: applied {applied} statement(s) from {sql_file}")
+        return applied
     except Exception as exc:
         connection.rollback()
-        print(f"MIGRATION FAILED ({type(exc).__name__}): {exc}")
+        print(f"MIGRATION FAILED ({type(exc).__name__}) in {sql_file}: {exc}")
         raise
-    finally:
-        if connection.open:
-            connection.close()
 
 
 def _split_statements(sql):
@@ -98,7 +105,16 @@ def _split_statements(sql):
 
 if __name__ == "__main__":
     args = parse_args()
+    files = [args.sql_file] if args.sql_file else all_migrations()
+    if not files:
+        print(f"No migration files found in {MIGRATIONS_DIR}")
+        sys.exit(1)
+    connection = connect()
     try:
-        run_migration(args.sql_file)
+        for path in files:
+            run_migration(path, connection)
     except Exception:
         sys.exit(1)
+    finally:
+        if connection.open:
+            connection.close()

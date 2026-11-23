@@ -373,10 +373,6 @@ stored exactly (`scheme://host:port`, no trailing slash). Remove these rows
 before go-live; adding `localhost` to a real tenant would let any local page
 post for that tenant.
 
-## Open questions
-
-None. Phase 2's open questions are recorded above as decisions.
-
 **Phase 2 accepted 2026-11-23** in a real browser (headless Edge) against the
 live host, from a cross-origin page at `http://localhost:8000`. Both fetches -
 `text/plain` and `application/json` - returned a readable 204, the latter
@@ -391,6 +387,83 @@ Note: `_fbp` / `_fbc` were absent from that run because the headless profile
 had no Meta cookies. The SDK does read them - verified in the Node contract
 test, which sent `fbp=fb.1.1700000000.111` and `fbc=fb.1.1700000000.222` - but
 a live browser only has them after a Meta pixel has set them.
+
+### D25: Phase 3 - destinations table, forwarder materialises, encryption deferred
+
+Settled 2026-11-23.
+
+**Destinations are a table, not env vars.** Migration `002_deliveries.sql` adds
+`destinations(tenant_id, type, name, config_json, active)` with a unique key on
+`(tenant_id, type, name)`. Phase 4's CRUD screen builds on it, and a tenant can
+have several destinations of the same type (for example a live and a test
+pixel).
+
+**The forwarder materialises deliveries; the receiver is untouched.** At the
+end of each pass it runs one idempotent statement:
+
+```sql
+INSERT IGNORE INTO deliveries (tenant_id, event_row_id, destination_id, ...)
+SELECT e.tenant_id, e.id, d.id, ...
+FROM events e JOIN destinations d ON d.tenant_id = e.tenant_id AND d.active = 1
+LEFT JOIN deliveries dl ON dl.event_row_id = e.id AND dl.destination_id = d.id
+WHERE dl.id IS NULL LIMIT ?
+```
+
+The unique key `(event_row_id, destination_id)` makes repeats no-ops. Ingest
+keeps its Phase 1 performance and accepted behaviour, and a newly added
+destination back-fills from existing events on the next pass.
+
+**Retry policy.** `attempts` increments when a delivery is claimed, so a crash
+still counts as an attempt. On a retryable failure the next attempt is
+`base * 2^(attempts-1)` seconds, capped: defaults 60s base, 3600s cap, 8
+attempts, then dead-letter. Success is a 2xx; `408`, `425`, `429` and any 5xx
+retry; other 4xx dead-letter immediately; transport failures (DNS, TLS,
+timeout) retry. TikTok is the exception: it returns 200 with a `code` in the
+body, so its adapter treats `code == 0` as success and a non-zero code as dead
+unless it is one of its rate-limit codes.
+
+**Concurrency is a claim, not `SKIP LOCKED`.** One statement takes the work:
+
+```sql
+UPDATE deliveries SET status='processing', claim_token=?, locked_until=NOW()+INTERVAL ? SECOND,
+       attempts=attempts+1
+WHERE status IN ('pending','processing') AND next_attempt_at <= NOW()
+  AND (locked_until IS NULL OR locked_until < NOW())
+ORDER BY next_attempt_at, id LIMIT ?
+```
+
+InnoDB locks the rows it touches, so a second run cannot claim them, and a run
+that dies leaves `locked_until` in the past so the rows return after the lock
+window. `SELECT ... FOR UPDATE SKIP LOCKED` was avoided because it needs MySQL
+8 / MariaDB 10.6+, which this host's version is not confirmed to provide.
+
+**Adapters implement `map`, `send`, `classify_error`** and live in
+`tracker.adapters`. Private add-ons register under the `tracker.adapters`
+entry-point group and are loaded on demand; the core never imports them
+(plan.md line 9), and a broken plugin cannot stop a run. Built-ins: `meta`,
+`ga4`, `tiktok`. Outbound HTTP uses `urllib` from the standard library, per D4.
+
+Event names are translated per provider: Meta uses `PageView`/`AddToCart`/
+`InitiateCheckout`/`Purchase`, TikTok uses `ViewContent`/`AddToCart`/
+`InitiateCheckout`/`CompletePayment`, GA4 keeps the internal snake_case names.
+
+**Secrets are stored in clear for now.** plan.md line 7 asks for encryption at
+rest with a key from an environment variable, but that needs the `cryptography`
+package and the rule for this build allows only flask and PyMySQL. Owner
+decision: defer to Phase 5, which already covers the security review. The gap
+is real and recorded rather than hidden: `destinations.config_json` holds
+provider tokens in plaintext. Two mitigations are already in place - the GA4
+`api_secret` travels in a query string, so it is stripped from any stored error
+text by `redact()`, and Meta's access token is sent in the body rather than the
+URL.
+
+Open for Phase 5: encrypt `config_json`, and decide whether credentials also
+need rotating on a schedule.
+
+## Open questions
+
+None. Phase 3's one open item (credential encryption) is recorded in D25 as
+Phase 5 work.
 
 
 
