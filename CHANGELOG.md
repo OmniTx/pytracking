@@ -95,6 +95,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/test_phase0.py` now asserts the removed diagnostics stay removed, so
   they cannot quietly return.
 
+### Added
+
+- **Phase 2 browser SDK**, `static/pytracking.js`, served at
+  `/static/pytracking.js`. Vanilla IIFE, no dependencies, no build step.
+  `pytracking.init({url, writeKey, debug, consent, autoPageView})`, `track()`,
+  and `pageView()`/`addToCart()`/`checkout()`/`purchase()` helpers; auto
+  `page_view` on init unless disabled. Generates `event_id` with
+  `crypto.randomUUID()` (fallback, reused on retry), reads `_fbp`/`_fbc`
+  cookies, and hashes email and phone with SHA-256 in the browser so raw PII
+  never leaves the page. Sends `text/plain` (a CORS simple request, and what
+  sendBeacon produces) with `fetch(..., keepalive)` and a `sendBeacon` flush on
+  `pagehide`/`visibilitychange`. Measured 7,915 bytes raw, 5,106 bytes with
+  comments and layout stripped (4.99 KB).
+- **CORS support in the receiver** (D24): `OPTIONS /api/v2/ev` grants
+  `Access-Control-Allow-Origin` only for origins registered in
+  `tenant_origins`, with methods `POST, OPTIONS`, header `Content-Type`,
+  `Max-Age` 600 and `Vary: Origin`; the POST echoes the origin only after the
+  tenant-specific origin check passes. Preflight responses keep
+  `Content-Length: 0` (D21).
+- The receiver now parses the raw body as JSON rather than requiring
+  `application/json`, so `navigator.sendBeacon` payloads are accepted;
+  malformed JSON is still 400.
+- `static/test.html`: test page that fires all four events and shows a replay
+  button, usable cross-origin (from `http://localhost:8000`) or same-origin
+  (`https://my.herbsworld.net/static/test.html`).
+- Tests: CORS preflight (registered vs unregistered origin, no-origin, DB
+  failure fails closed, POST echo), and beacon bodies (`text/plain` accepted,
+  garbage 400, JSON still works, oversize 413). 36 tests total.
+
 ### Verified
 
 - **Phase 0 and Phase 1 accepted over public HTTPS (2026-11-23), 12/12

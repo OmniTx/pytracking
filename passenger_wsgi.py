@@ -26,6 +26,9 @@ MAX_EVENT_ID_LEN = 64
 MAX_NAME_LEN = 64
 MAX_USER_AGENT_LEN = 255
 
+# CORS: how long a browser may cache a successful preflight, in seconds.
+CORS_MAX_AGE = 600
+
 
 def _log_traceback():
     """Append the current traceback to pytracking-debug.log beside this file."""
@@ -144,17 +147,48 @@ def _get_allowed_origins(conn, tenant_id):
         return [row[0] for row in cursor.fetchall()]
 
 
+def _origin_registered(conn, origin):
+    """True when *origin* belongs to any tenant.
+
+    A preflight carries no request body, so there is no write key to resolve a
+    tenant from. The browser only needs to know whether this origin may speak
+    to us at all; the POST itself still enforces the tenant-specific match.
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT 1 FROM tenant_origins WHERE origin = %s LIMIT 1",
+            (origin,),
+        )
+        return cursor.fetchone() is not None
+
+
+def _apply_cors(response, origin):
+    """Echo *origin* in Access-Control-Allow-Origin, plus methods and headers.
+
+    Only call this once the origin is known to be legitimate: the header is the
+    grant, and reflecting an unknown origin would let any page post.
+    """
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Max-Age"] = str(CORS_MAX_AGE)
+    response.headers["Vary"] = "Origin"
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
 
-@application.route("/api/v2/ev", methods=["POST"])
+@application.route("/api/v2/ev", methods=["POST", "OPTIONS"])
 def receive_event():
-    """Phase-1 event receiver.
+    """Phase-1/2 event receiver.
 
     Order matters: size and shape checks first, then tenant resolution.
 
+        0. OPTIONS preflight: grant CORS only to registered origins.
         1. Reject bodies over 16 KB with 413.
         2. Parse JSON; reject malformed with 400.
         3. Missing/malformed/unknown/inactive write key → silent 204.
@@ -168,6 +202,36 @@ def receive_event():
     and in-process memory cannot enforce a shared limit.
     """
 
+    # --- 0. CORS preflight ---------------------------------------------------
+    # Browsers send OPTIONS before a cross-origin POST with a JSON body. There
+    # is no request body here, so the write key cannot be resolved; grant only
+    # when the origin is registered for some tenant. The POST below still
+    # enforces the tenant-specific match.
+    if request.method == "OPTIONS":
+        origin = request.headers.get("Origin")
+        if not origin:
+            return _no_content()
+        connection = None
+        try:
+            connection = pymysql.connect(
+                host=os.environ["DB_HOST"],
+                database=os.environ["DB_NAME"],
+                user=os.environ["DB_USER"],
+                password=os.environ["DB_PASSWORD"],
+                connect_timeout=5,
+                charset="utf8mb4",
+            )
+            if _origin_registered(connection, origin):
+                return _apply_cors(_no_content(), origin)
+        except Exception:
+            if os.environ.get("PYTRACKING_DEBUG") == "1":
+                _log_traceback()
+        finally:
+            if connection is not None and connection.open:
+                connection.close()
+        # Unregistered origin: no CORS headers, so the browser blocks the POST.
+        return _no_content()
+
     # --- 1. Body size --------------------------------------------------------
     # Check size first: an oversize body is 413 regardless of its shape.
     # Use Content-Length when available; fall back to raw body byte length.
@@ -178,8 +242,11 @@ def receive_event():
         return Response(status=413)  # Request Entity Too Large
 
     # --- 2. Parse JSON -------------------------------------------------------
+    # Parsed from the raw body rather than request.get_json(), because
+    # navigator.sendBeacon(string) sends Content-Type: text/plain;charset=UTF-8
+    # and get_json() refuses to parse that. Malformed JSON is still a 400.
     try:
-        body = request.get_json(force=False, silent=False)
+        body = json.loads(request.get_data(as_text=True))
     except Exception:
         body = None
     if not isinstance(body, dict):
@@ -206,6 +273,9 @@ def receive_event():
 
     # --- 5. Resolve write key & validate -------------------------------------
     connection = None
+    # Set only once the origin is proven legitimate for this tenant; the CORS
+    # grant is applied after the try block so every exit path is covered.
+    cors_origin = None
     try:
         connection = pymysql.connect(
             host=os.environ["DB_HOST"],
@@ -228,6 +298,10 @@ def receive_event():
         origin_header = request.headers.get("Origin")
         if not allowed or origin_header not in allowed:
             return _no_content()
+
+        # The origin is legitimate for this tenant, so a cross-origin fetch
+        # caller may read the response. Only granted from here on.
+        cors_origin = origin_header
 
         # --- 6. Build & insert -------------------------------------------------
         client_ip = request.remote_addr or "0.0.0.0"
@@ -278,7 +352,10 @@ def receive_event():
         if connection is not None and connection.open:
             connection.close()
 
-    return _no_content()
+    response = _no_content()
+    if cors_origin:
+        _apply_cors(response, cors_origin)
+    return response
 
 
 @application.get("/healthz")
@@ -364,8 +441,8 @@ def landing():
   <dt>GET /</dt><dd>this page</dd>
   <dt>GET /healthz</dt><dd><code>{{"ok": true}}</code></dd>
   <dt>POST /api/v2/ev</dt><dd>event receiver (204)</dd>
-  <dt>GET /diag/db</dt><dd>MySQL connectivity</dd>
-  <dt>GET /diag/outbound</dt><dd>HTTPS connectivity</dd>
+  <dt>GET /static/pytracking.js</dt><dd>browser SDK</dd>
+  <dt>GET /diag/no-content</dt><dd>204 framing check</dd>
 </dl>
 </body>
 </html>""".format(

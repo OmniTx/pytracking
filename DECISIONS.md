@@ -302,7 +302,79 @@ not see host framing problems (D21). `acceptance.py` is kept in the repo and
 run against a staging copy; `diagnose.py` remains for environment checks. See
 `DEPLOY.md`.
 
+### D24: Phase 2 - browser hashing, CORS, and the beacon body type
+
+Settled 2026-11-23.
+
+**Email and phone are hashed in the browser.** Owner decision. The SDK
+normalises (email trimmed and lowercased; phone reduced to digits with a
+leading `+` if present) and applies SHA-256 via `crypto.subtle`, sending
+`user_data.em` / `user_data.ph`. Raw values never leave the page and the
+receiver stores only hashes inside `payload_json`. Consequence: hashing is
+skipped when `crypto.subtle` is unavailable, which on a real site means a
+plain-http page (secure context is required).
+
+**Event payload contract** (what the SDK sends, and therefore what
+`payload_json` holds, minus `wk`):
+
+```
+{
+  "wk": "<write key>",                 // stripped before storage (D15)
+  "event_id": "<32 hex chars>",        // crypto.randomUUID(), reused on retry
+  "name": "page_view|add_to_cart|checkout|purchase|custom",
+  "event_time": 1730000000,            // unix seconds
+  "consent_state": true | false | null,
+  "user_data": {"em": "<sha256>", "ph": "<sha256>",
+                "fbp": "...", "fbc": "...", "client_user_agent": "..."},
+  "custom_data": {"value": 49.99, "currency": "USD", ...},
+  "source": {"url": "...", "referrer": "..."}
+}
+```
+
+The dedicated columns (`name`, `event_id`, `user_agent`, `source_origin`,
+`consent_state`, `client_ip_hash`) are still filled by the receiver from the
+request itself, so the payload duplicates a little of that on purpose: the
+stored payload should be self-describing for the Phase 3 forwarder.
+
+**CORS.** A preflight carries no body, so no write key exists to resolve a
+tenant from. `OPTIONS /api/v2/ev` therefore grants `Access-Control-Allow-Origin`
+when the request origin appears in `tenant_origins` **for any tenant**; the POST
+itself still enforces the tenant-specific match (D11). The grant is echoed only
+for a legitimate origin, never `*`, and `Vary: Origin` is set so caches do not
+serve one origin's answer to another. Allowed methods `POST, OPTIONS`, allowed
+headers `Content-Type`, `Access-Control-Max-Age` 600. Preflight responses still
+go through `_no_content()`, so the `Content-Length: 0` requirement (D21) holds.
+On a POST, the grant is added only after the origin matches the resolved
+tenant's allowlist.
+
+**The SDK sends `text/plain`.** `sendBeacon(string)` uses
+`text/plain;charset=UTF-8`, and a `text/plain` cross-origin POST is a CORS
+"simple request", so no preflight round trip is needed and beacon delivery is
+not at risk from a failed preflight on unload. The receiver therefore parses
+the raw body as JSON instead of trusting `Content-Type` (malformed JSON is
+still 400). `OPTIONS` support remains for clients that do send
+`application/json`.
+
+**SDK delivery.** Served by Flask from `static/pytracking.js` at
+`/static/pytracking.js`, so it versions with the app. Measured size: 7,915
+bytes raw, **5,106 bytes with comments and layout stripped (4.99 KB)** - under
+the 10 KB budget. No build step; the readable file is the artifact.
+
+**Test origins.** Two, both for a throwaway test tenant only:
+
+- `http://localhost:8000` - cross-origin. Serve `static/test.html` with
+  `python -m http.server 8000` from the folder containing it. This exercises
+  preflight and the origin check for real.
+- `https://my.herbsworld.net` - same-origin, proving the production-like HTTPS
+  path. Open `https://my.herbsworld.net/static/test.html`.
+
+A `file://` page sends `Origin: null` and will not match. Origins must be
+stored exactly (`scheme://host:port`, no trailing slash). Remove these rows
+before go-live; adding `localhost` to a real tenant would let any local page
+post for that tenant.
+
 ## Open questions
 
-None. Phase 2 opens its own.
+None. Phase 2's open questions are recorded above as decisions.
+
 

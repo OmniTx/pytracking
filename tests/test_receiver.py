@@ -60,8 +60,12 @@ class _Cursor:
 
     def __init__(self, conn):
         self.conn = conn
+        self._last = ""
+        self._args = None
 
     def execute(self, query, args=None):
+        self._last = query
+        self._args = args
         if "INSERT INTO events" in query:
             self.conn.events.append((query, args))
             return 1
@@ -69,6 +73,10 @@ class _Cursor:
         return 0
 
     def fetchone(self):
+        # _origin_registered(): does any tenant allow this exact origin?
+        if "SELECT 1 FROM tenant_origins" in self._last:
+            origin = self._args[0] if self._args else None
+            return (1,) if origin in self.conn.origins else None
         return self.conn.key_row
 
     def fetchall(self):
@@ -253,15 +261,21 @@ class _UniqueCursor:
         self.db = db
 
     def execute(self, query, args=None):
+        self._last = query
+        self._args = args
         if "INSERT INTO events" in query:
             self.db.insert_attempts += 1
             key = (args[0], args[1])     # (tenant_id, event_id)
             if key in self.db.rows:
                 raise IntegrityError(1062, "Duplicate entry")
             self.db.rows[key] = args
+            return 1
         return 0
 
     def fetchone(self):
+        if "SELECT 1 FROM tenant_origins" in getattr(self, "_last", ""):
+            origin = self._args[0] if self._args else None
+            return (1,) if origin in self.db.origins else None
         return self.db.key_row
 
     def fetchall(self):
@@ -387,13 +401,20 @@ class RawIpProtectionTests(unittest.TestCase):
 
     # --- the 204 framing the host requires (decision D21) -------------------
 
-    def _assert_bare_204(self, resp):
+    def _assert_bare_204(self, resp, cors=False):
         self.assertEqual(resp.status_code, 204)
         self.assertEqual(resp.data, b"")
         headers = dict(resp.headers)
         # LiteSpeed answers 500 for a 204 without Content-Length, so it must
         # be present; everything else (Content-Type, Set-Cookie, X-*) must not.
         self.assertEqual(headers.pop("Content-Length", None), "0")
+        # CORS headers are permitted on a granted origin; Vary supports them.
+        if cors:
+            headers.pop("Access-Control-Allow-Origin", None)
+            headers.pop("Access-Control-Allow-Methods", None)
+            headers.pop("Access-Control-Allow-Headers", None)
+            headers.pop("Access-Control-Max-Age", None)
+            headers.pop("Vary", None)
         self.assertEqual(headers, {})
 
     def test_204_carries_content_length(self):
@@ -416,7 +437,9 @@ class RawIpProtectionTests(unittest.TestCase):
         self.addCleanup(p.stop)
         payload, hdrs = _valid_body()
         merged = {**hdrs, "Origin": "https://shop.example.com"}
-        self._assert_bare_204(self.client.post("/api/v2/ev", data=payload, headers=merged))
+        self._assert_bare_204(
+            self.client.post("/api/v2/ev", data=payload, headers=merged),
+            cors=True)
 
     def test_duplicate_returns_bare_204(self):
         db = _UniqueDb(origins=["https://shop.example.com"])
@@ -426,7 +449,9 @@ class RawIpProtectionTests(unittest.TestCase):
         payload, hdrs = _valid_body()
         merged = {**hdrs, "Origin": "https://shop.example.com"}
         self.client.post("/api/v2/ev", data=payload, headers=merged)
-        self._assert_bare_204(self.client.post("/api/v2/ev", data=payload, headers=merged))
+        self._assert_bare_204(
+            self.client.post("/api/v2/ev", data=payload, headers=merged),
+            cors=True)
 
     def test_unknown_key_returns_bare_204(self):
         conn = _Conn()  # key_row None -> unknown
@@ -458,6 +483,178 @@ class RawIpProtectionTests(unittest.TestCase):
 
     def test_missing_key_returns_bare_204(self):
         self._assert_bare_204(self.client.post("/api/v2/ev", json={}))
+
+
+# ---------------------------------------------------------------------------
+# CORS preflight (Phase 2: the SDK posts cross-origin)
+# ---------------------------------------------------------------------------
+
+class CorsTests(unittest.TestCase):
+
+    ORIGIN = "http://localhost:8000"
+
+    def setUp(self):
+        self.client = passenger_wsgi.application.test_client()
+        self.env_patch = patch.dict(os.environ, DB_ENV)
+        self.env_patch.start()
+        self.addCleanup(self.env_patch.stop)
+
+    def _conn(self, registered=True):
+        conn = _Conn()
+        conn.origins = [self.ORIGIN] if registered else ["https://other.example"]
+        return conn
+
+    def _patch_conn(self, conn):
+        patcher = patch.object(passenger_wsgi.pymysql, "connect",
+                               return_value=conn)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_preflight_grants_registered_origin(self):
+        self._patch_conn(self._conn(registered=True))
+        resp = self.client.options(
+            "/api/v2/ev",
+            headers={
+                "Origin": self.ORIGIN,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Content-Type",
+            },
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), self.ORIGIN)
+        self.assertIn("POST", resp.headers.get("Access-Control-Allow-Methods", ""))
+        self.assertIn("OPTIONS", resp.headers.get("Access-Control-Allow-Methods", ""))
+        self.assertIn("Content-Type",
+                      resp.headers.get("Access-Control-Allow-Headers", ""))
+        # D21: the framing must survive the CORS headers.
+        self.assertEqual(resp.headers.get("Content-Length"), "0")
+        self.assertEqual(resp.data, b"")
+
+    def test_preflight_denies_unregistered_origin(self):
+        self._patch_conn(self._conn(registered=False))
+        resp = self.client.options(
+            "/api/v2/ev",
+            headers={"Origin": self.ORIGIN,
+                     "Access-Control-Request-Method": "POST"},
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertIsNone(resp.headers.get("Access-Control-Allow-Origin"))
+        self.assertEqual(resp.headers.get("Content-Length"), "0")
+
+    def test_preflight_without_origin_grants_nothing(self):
+        self._patch_conn(self._conn(registered=True))
+        resp = self.client.options("/api/v2/ev")
+        self.assertEqual(resp.status_code, 204)
+        self.assertIsNone(resp.headers.get("Access-Control-Allow-Origin"))
+
+    def test_preflight_fails_closed_on_db_error(self):
+        patcher = patch.object(passenger_wsgi.pymysql, "connect",
+                               side_effect=RuntimeError("db down"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        resp = self.client.options(
+            "/api/v2/ev", headers={"Origin": self.ORIGIN})
+        self.assertEqual(resp.status_code, 204)
+        self.assertIsNone(resp.headers.get("Access-Control-Allow-Origin"))
+
+    def test_post_success_echoes_origin(self):
+        conn = self._conn(registered=True)
+        conn.key_row = (1, 1)
+        self._patch_conn(conn)
+        resp = self.client.post(
+            "/api/v2/ev",
+            json={"wk": "valid-key", "event_id": "e1", "name": "page_view"},
+            headers={"Origin": self.ORIGIN},
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), self.ORIGIN)
+        self.assertEqual(resp.headers.get("Content-Length"), "0")
+        self.assertEqual(len(conn.events), 1)
+
+    def test_post_bad_origin_grants_nothing(self):
+        conn = self._conn(registered=False)
+        conn.key_row = (1, 1)
+        self._patch_conn(conn)
+        resp = self.client.post(
+            "/api/v2/ev",
+            json={"wk": "valid-key", "event_id": "e1", "name": "page_view"},
+            headers={"Origin": "https://evil.example"},
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertIsNone(resp.headers.get("Access-Control-Allow-Origin"))
+        self.assertEqual(conn.events, [])
+
+
+# ---------------------------------------------------------------------------
+# Beacon bodies: sendBeacon(string) arrives as text/plain
+# ---------------------------------------------------------------------------
+
+class BeaconBodyTests(unittest.TestCase):
+
+    ORIGIN = "https://shop.example.com"
+
+    def setUp(self):
+        self.client = passenger_wsgi.application.test_client()
+        self.env_patch = patch.dict(os.environ, DB_ENV)
+        self.env_patch.start()
+        self.addCleanup(self.env_patch.stop)
+
+    def _patch_conn(self, key_row=(1, 1), origins=None):
+        conn = _Conn()
+        conn.key_row = key_row
+        conn.origins = origins if origins is not None else [self.ORIGIN]
+        patcher = patch.object(passenger_wsgi.pymysql, "connect",
+                               return_value=conn)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return conn
+
+    def test_text_plain_json_is_accepted(self):
+        """sendBeacon(string) sends text/plain; the receiver must still parse."""
+        conn = self._patch_conn()
+        body = json.dumps({"wk": "valid-key", "event_id": "b1",
+                           "name": "purchase"})
+        resp = self.client.post(
+            "/api/v2/ev",
+            data=body,
+            content_type="text/plain;charset=UTF-8",
+            headers={"Origin": self.ORIGIN},
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(len(conn.events), 1)
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"),
+                         self.ORIGIN)
+
+    def test_text_plain_garbage_is_400(self):
+        self._patch_conn()
+        resp = self.client.post(
+            "/api/v2/ev",
+            data="not json at all",
+            content_type="text/plain;charset=UTF-8",
+            headers={"Origin": self.ORIGIN},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_json_content_type_still_works(self):
+        conn = self._patch_conn()
+        resp = self.client.post(
+            "/api/v2/ev",
+            json={"wk": "valid-key", "event_id": "b2", "name": "checkout"},
+            headers={"Origin": self.ORIGIN},
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(len(conn.events), 1)
+
+    def test_oversize_text_plain_is_413(self):
+        self._patch_conn()
+        body = '{"wk":"v","event_id":"e","name":"n","pad":"' + ("z" * 20000) + '"}'
+        resp = self.client.post(
+            "/api/v2/ev",
+            data=body,
+            content_type="text/plain",
+            headers={"Origin": self.ORIGIN},
+        )
+        self.assertEqual(resp.status_code, 413)
 
 
 if __name__ == "__main__":

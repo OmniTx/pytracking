@@ -99,12 +99,36 @@ curl -i http://127.0.0.1:5000/diag/no-content # 204, Content-Length: 0
 | Route | Purpose |
 | --- | --- |
 | `POST /api/v2/ev` | event receiver (204 on success and on silent rejects) |
+| `OPTIONS /api/v2/ev` | CORS preflight for browser clients |
 | `GET /healthz` | health check, `{"ok": true}` |
 | `GET /` | landing page with build marker and env-var presence |
+| `GET /static/pytracking.js` | browser SDK |
+| `GET /static/test.html` | SDK test page |
 | `GET /diag/no-content` | confirms the host accepts our 204 framing |
 
 Public diagnostics `/diag/db` and `/diag/outbound` were removed before Phase 2
 because they exposed database and egress status; see `DECISIONS.md` D23.
+
+## Browser SDK
+
+```html
+<script src="https://my.herbsworld.net/static/pytracking.js"></script>
+<script>
+  pytracking.init({
+    url: "https://my.herbsworld.net/api/v2/ev",
+    writeKey: "wk_...",          // tenant write key
+    consent: true                // optional; sent as consent_state
+  });
+  pytracking.addToCart({ value: 19.5, currency: "EUR", email: "a@b.c" });
+  pytracking.purchase({ value: 49.99, currency: "USD",
+                        email: "a@b.c", phone: "+1 555 0100" });
+</script>
+```
+
+`init()` sends a `page_view` automatically unless `autoPageView: false`.
+Email and phone are SHA-256 hashed in the browser, so raw values are never
+transmitted. The receiver only accepts origins listed in `tenant_origins` for
+that tenant; see `DECISIONS.md` D24 for the CORS policy and payload shape.
 
 ## Deployment
 

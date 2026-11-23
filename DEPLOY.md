@@ -105,13 +105,92 @@ path through Passenger, LiteSpeed, the proxies and MySQL.
 PYTRACKING_BASE_URL=https://staging.example.net python acceptance.py
 ```
 
+## Browser SDK (Phase 2)
+
+The SDK ships as part of the app and is served by Flask:
+
+```
+https://my.herbsworld.net/static/pytracking.js
+https://my.herbsworld.net/static/test.html
+```
+
+Both live in the checkout's `static/` directory, so they deploy with a normal
+`git pull` and need no extra web-server configuration. No build step: the
+file in `static/` is the artifact (4.99 KB with comments and layout stripped).
+
+### Prepare the test tenant
+
+Use a throwaway tenant and key. Never add test origins to a real tenant.
+
+```sql
+INSERT INTO tenants (name, slug, status)
+VALUES ('SDK Test', 'sdk-test', 'active');
+
+-- put the id from the previous statement here
+INSERT INTO tenant_keys (tenant_id, write_key, active)
+VALUES (<id>, 'wk_sdk_test_001', 1);
+
+INSERT INTO tenant_origins (tenant_id, origin) VALUES
+  (<id>, 'http://localhost:8000'),      -- cross-origin test page
+  (<id>, 'https://my.herbsworld.net');  -- same-origin test page
+```
+
+Origins must match exactly: scheme, host and port, no trailing slash.
+`file://` sends `Origin: null` and will not match.
+
+### Cross-origin test (exercises CORS)
+
+```sh
+cd <folder containing static/test.html>
+python -m http.server 8000
+```
+
+Then open `http://localhost:8000/test.html?wk=wk_sdk_test_001`.
+
+The test page disables the SDK's automatic `page_view` so every event is a
+deliberate click; the production default still fires one on `init()`.
+
+### Same-origin test (production-like HTTPS)
+
+Open
+`https://my.herbsworld.net/static/test.html?wk=wk_sdk_test_001`.
+
+### Verify what landed
+
+```sql
+SELECT id, tenant_id, event_id, name, received_at,
+       JSON_EXTRACT(payload_json, '$.user_data.em') AS email_hash,
+       JSON_EXTRACT(payload_json, '$.user_data.fbp') AS fbp,
+       source_origin, user_agent
+FROM events
+WHERE tenant_id = <id>
+ORDER BY id DESC
+LIMIT 20;
+```
+
+Each click should add exactly one row. Clicking **replay last event_id** must
+not add another. The `email_hash` should be 64 hex characters, and no raw
+email or phone should appear anywhere in `payload_json`.
+
+### Clean up before go-live
+
+```sql
+DELETE FROM events   WHERE tenant_id = <id>;
+DELETE FROM tenant_keys   WHERE tenant_id = <id>;
+DELETE FROM tenant_origins WHERE tenant_id = <id>;
+DELETE FROM tenants  WHERE id = <id>;
+```
+
 ## Public routes
 
 | Route | Purpose |
 | --- | --- |
 | `POST /api/v2/ev` | event receiver |
+| `OPTIONS /api/v2/ev` | CORS preflight for browsers |
 | `GET /healthz` | health check |
 | `GET /` | landing page |
+| `GET /static/pytracking.js` | browser SDK |
+| `GET /static/test.html` | SDK test page |
 | `GET /diag/no-content` | confirms the host accepts our 204 framing |
 
 `/diag/db` and `/diag/outbound` were removed before Phase 2 (decision D23):

@@ -42,14 +42,15 @@ def record(name, passed, detail=""):
         print("       {0}".format(detail))
 
 
-def request(method, path, body=None, headers=None, timeout=25):
+def request(method, path, body=None, headers=None, timeout=25,
+            content_type="application/json"):
     """Return (status, headers, body_text). HTTPError is a normal result."""
     url = BASE_URL + path
     data = None
     request_headers = dict(headers or {})
     if body is not None:
         data = body.encode("utf-8")
-        request_headers.setdefault("Content-Type", "application/json")
+        request_headers.setdefault("Content-Type", content_type)
     req = urllib.request.Request(url, data=data, method=method,
                                  headers=request_headers)
     try:
@@ -163,6 +164,90 @@ def main():
         tenant_id = create_fixture(connection, write_key, origin)
         print("\nfixture tenant id {0}, origin {1}\n".format(tenant_id, origin))
 
+        # --- Phase 2: CORS preflight -------------------------------------
+        status, headers, body = request(
+            "OPTIONS", "/api/v2/ev",
+            headers={"Origin": origin,
+                     "Access-Control-Request-Method": "POST",
+                     "Access-Control-Request-Headers": "Content-Type"},
+        )
+        record("preflight grants a registered origin",
+               status == 204 and headers.get("Access-Control-Allow-Origin") == origin,
+               "status={0} ACAO={1!r}".format(
+                   status, headers.get("Access-Control-Allow-Origin")))
+        record("preflight keeps Content-Length: 0", 
+               headers.get("Content-Length") == "0",
+               "Content-Length={0!r}".format(headers.get("Content-Length")))
+
+        status, headers, body = request(
+            "OPTIONS", "/api/v2/ev",
+            headers={"Origin": "https://not-allowed.example.com",
+                     "Access-Control-Request-Method": "POST"},
+        )
+        record("preflight denies an unregistered origin",
+               status == 204 and headers.get("Access-Control-Allow-Origin") is None,
+               "status={0} ACAO={1!r}".format(
+                   status, headers.get("Access-Control-Allow-Origin")))
+
+        # --- Phase 2: beacon-shaped body (text/plain) ---------------------
+        import hashlib
+
+        email = "Buyer@Example.COM "
+        email_hash = hashlib.sha256(
+            email.strip().lower().encode("utf-8")).hexdigest()
+        sdk_event = "acc-sdk-" + secrets.token_hex(6)
+        event_ids_to_clean.append(sdk_event)
+        sdk_payload = json.dumps({
+            "wk": write_key,
+            "event_id": sdk_event,
+            "name": "purchase",
+            "event_time": 1730000000,
+            "consent_state": True,
+            "user_data": {
+                "em": email_hash,
+                "fbp": "fb.1.1700000000.111",
+                "fbc": "fb.1.1700000000.222",
+                "client_user_agent": "acceptance-sdk/1.0",
+            },
+            "custom_data": {"value": 49.99, "currency": "USD"},
+            "source": {"url": "http://localhost:8000/test.html"},
+        })
+        status, headers, body = request(
+            "POST", "/api/v2/ev", body=sdk_payload,
+            headers={"Origin": origin, "User-Agent": "acceptance-sdk/1.0"},
+            content_type="text/plain;charset=UTF-8",
+        )
+        record("text/plain beacon body is accepted",
+               status == 204,
+               "status={0} body={1!r}".format(status, body.strip()[:120]))
+        record("successful POST echoes the origin",
+               headers.get("Access-Control-Allow-Origin") == origin,
+               "ACAO={0!r}".format(headers.get("Access-Control-Allow-Origin")))
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT payload_json FROM events "
+                "WHERE tenant_id = %s AND event_id = %s",
+                (tenant_id, sdk_event),
+            )
+            sdk_row = cursor.fetchone()
+        if sdk_row:
+            stored_sdk = json.loads(sdk_row[0])
+            user_data = stored_sdk.get("user_data") or {}
+            record("hashed email stored, raw email absent",
+                   user_data.get("em") == email_hash and
+                   "Buyer@Example.COM" not in sdk_row[0],
+                   "em={0}...".format((user_data.get("em") or "")[:12]))
+            record("fbp/fbc and custom_data stored",
+                   user_data.get("fbp") == "fb.1.1700000000.111" and
+                   user_data.get("fbc") == "fb.1.1700000000.222" and
+                   stored_sdk.get("custom_data", {}).get("value") == 49.99,
+                   "fbp={0!r} fbc={1!r}".format(
+                       user_data.get("fbp"), user_data.get("fbc")))
+        else:
+            record("beacon-shaped event readable", False, "row not found")
+
+        # --- Phase 1: original wire checks --------------------------------
         status, headers, body = request(
             "POST", "/api/v2/ev",
             body=json.dumps({
@@ -176,9 +261,12 @@ def main():
         record("valid key returns 204 over HTTPS", status == 204,
                "status={0} body={1!r}".format(status, body.strip()[:120]))
 
+        # The beacon-shaped event above is already stored, so counts are
+        # relative to it rather than absolute.
         stored = count_events(connection, tenant_id)
-        record("the event landed in MySQL", stored == 1,
-               "{0} row(s) for tenant {1}".format(stored, tenant_id))
+        record("the event landed in MySQL", stored == 2,
+               "{0} row(s) for tenant {1} (sdk event + this one)".format(
+                   stored, tenant_id))
 
         with connection.cursor() as cursor:
             cursor.execute(
@@ -212,7 +300,7 @@ def main():
         )
         after = count_events(connection, tenant_id)
         record("duplicate event_id stores nothing extra",
-               status == 204 and after == 1,
+               status == 204 and after == 2,
                "status={0} rows={1}".format(status, after))
 
         bad_origin_event = "acc-bad-" + secrets.token_hex(6)
@@ -224,9 +312,9 @@ def main():
         )
         after_bad_origin = count_events(connection, tenant_id)
         record("bad origin writes nothing",
-               status == 204 and after_bad_origin == 1,
+               status == 204 and after_bad_origin == 2,
                "status={0} rows={1}".format(status, after_bad_origin))
-        if after_bad_origin != 1:
+        if after_bad_origin != 2:
             event_ids_to_clean.append(bad_origin_event)
 
         status, _, body = request(

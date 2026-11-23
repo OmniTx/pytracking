@@ -1,0 +1,149 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pytracking test page</title>
+<style>
+  body { font: 15px/1.6 -apple-system, Segoe UI, Roboto, sans-serif;
+         margin: 0; padding: 2rem; max-width: 60rem; color: #161616; background: #f4f4f4; }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+  fieldset { border: 1px solid #c6c6c6; margin: 1.25rem 0; padding: .75rem 1rem; }
+  legend { font-weight: 600; padding: 0 .35rem; }
+  label { display: block; margin: .4rem 0 .15rem; font-size: .85rem; }
+  input { width: 100%; padding: .4rem .5rem; font: inherit; box-sizing: border-box;
+          border: 1px solid #8d8d8d; border-radius: 3px; background: #fff; }
+  button { font: inherit; padding: .45rem .9rem; margin: .5rem .4rem 0 0;
+           border: 1px solid #0f62fe; background: #0f62fe; color: #fff;
+           border-radius: 3px; cursor: pointer; }
+  button.secondary { background: #fff; color: #0f62fe; }
+  #log { margin-top: 1rem; padding: .75rem; background: #161616; color: #f4f4f4;
+         border-radius: 3px; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+         white-space: pre-wrap; min-height: 8rem; }
+  .warn { color: #b32d0f; font-weight: 600; }
+  .muted { color: #525252; font-size: .85rem; }
+</style>
+</head>
+<body>
+<h1>pytracking test page</h1>
+<p class="muted">Phase 2 SDK. Origin of this page: <code id="selfOrigin">?</code></p>
+
+<fieldset>
+  <legend>Receiver</legend>
+  <label for="url">Endpoint URL</label>
+  <input id="url" value="https://my.herbsworld.net/api/v2/ev">
+  <label for="sdk">SDK URL</label>
+  <input id="sdk" value="https://my.herbsworld.net/static/pytracking.js">
+  <label for="wk">Write key (test tenant only)</label>
+  <input id="wk" placeholder="wk_..." autocomplete="off">
+  <p class="muted">This page never stores the key. Pass <code>?wk=...</code>
+    in the URL to prefill it.</p>
+</fieldset>
+
+<fieldset>
+  <legend>Matching data (optional)</legend>
+  <label for="email">Email (hashed in the browser)</label>
+  <input id="email" type="email" placeholder="buyer@example.com">
+  <label for="phone">Phone (hashed in the browser)</label>
+  <input id="phone" type="tel" placeholder="+1 555 0100">
+</fieldset>
+
+<fieldset>
+  <legend>Events</legend>
+  <button data-event="page_view">page_view</button>
+  <button data-event="add_to_cart">add_to_cart</button>
+  <button data-event="checkout">checkout</button>
+  <button data-event="purchase">purchase</button>
+  <button id="replay" class="secondary">replay last event_id</button>
+  <button id="clear" class="secondary">clear log</button>
+</fieldset>
+
+<p class="muted" id="status"></p>
+<div id="log"></div>
+
+<script>
+  (function () {
+    "use strict";
+    var params = new URLSearchParams(location.search);
+    var logEl = document.getElementById("log");
+    var statusEl = document.getElementById("status");
+    var lastEventId = null;
+
+    document.getElementById("selfOrigin").textContent = location.origin;
+    if (params.get("wk")) document.getElementById("wk").value = params.get("wk");
+    if (params.get("url")) document.getElementById("url").value = params.get("url");
+
+    function log() {
+      var line = Array.prototype.join.call(arguments, " ");
+      logEl.textContent += line + "\n";
+    }
+
+    function loadSdk(src) {
+      return new Promise(function (resolve, reject) {
+        var script = document.createElement("script");
+        script.src = src;
+        script.onload = function () { resolve(window.pytracking); };
+        script.onerror = function () { reject(new Error("failed to load " + src)); };
+        document.head.appendChild(script);
+      });
+    }
+
+    var writeKey = document.getElementById("wk").value;
+    var url = document.getElementById("url").value;
+    if (!writeKey) {
+      statusEl.innerHTML = '<span class="warn">No write key.</span> ' +
+        "Add ?wk=... to the URL, then reload.";
+      return;
+    }
+
+    statusEl.textContent = "loading SDK...";
+    loadSdk(document.getElementById("sdk").value).then(function (sdk) {
+      sdk.init({ url: url, writeKey: writeKey, autoPageView: false, debug: true });
+      statusEl.textContent = "SDK ready. Sends go to " + url + " from " +
+        location.origin + ".";
+      log("initialized; page origin " + location.origin);
+      log("Origin header sent by the browser will be " + location.origin);
+      log("Make sure that exact string is in tenant_origins.");
+    }).catch(function (error) {
+      statusEl.innerHTML = '<span class="warn">' + error.message + "</span>";
+    });
+
+    function matching() {
+      var out = {};
+      var email = document.getElementById("email").value.trim();
+      var phone = document.getElementById("phone").value.trim();
+      if (email) out.email = email;
+      if (phone) out.phone = phone;
+      return out;
+    }
+
+    document.querySelectorAll("button[data-event]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var name = button.getAttribute("data-event");
+        var props = matching();
+        if (window.crypto && crypto.randomUUID) {
+          props.event_id = crypto.randomUUID().replace(/-/g, "");
+          lastEventId = props.event_id;
+        }
+        props.value = 49.99;
+        props.currency = "USD";
+        log("-> " + name + " event_id=" + (props.event_id || "(generated)"));
+        window.pytracking.track(name, props);
+      });
+    });
+
+    document.getElementById("replay").addEventListener("click", function () {
+      if (!lastEventId) { log("no event_id captured yet"); return; }
+      log("-> replay event_id=" + lastEventId + " (server must store one row)");
+      window.pytracking.track("purchase", { event_id: lastEventId, value: 49.99,
+                                            currency: "USD" });
+    });
+
+    document.getElementById("clear").addEventListener("click", function () {
+      logEl.textContent = "";
+    });
+  })();
+</script>
+</body>
+</html>
